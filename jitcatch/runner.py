@@ -39,6 +39,19 @@ class WorktreeSandbox:
 
     def _add_worktree(self, path: Path, rev: str) -> None:
         self._run_git("worktree", "add", "--detach", str(path), rev)
+        self._link_node_modules(path)
+
+    def _link_node_modules(self, worktree: Path) -> None:
+        src = self.repo / "node_modules"
+        if not src.exists():
+            return
+        dst = worktree / "node_modules"
+        if dst.exists() or dst.is_symlink():
+            return
+        try:
+            dst.symlink_to(src, target_is_directory=True)
+        except OSError:
+            pass
 
     def _remove_worktree(self, path: Path) -> None:
         try:

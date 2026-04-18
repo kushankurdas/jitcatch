@@ -23,3 +23,20 @@ def run_intent_aware(
         mode="intent",
     )
     return risks, tests
+
+
+def run_intent_aware_bundle(
+    llm: LLMClient,
+    bundle: str,
+    lang: str,
+    hints: str,
+) -> Tuple[List[str], List[GeneratedTest]]:
+    risks = llm.infer_risks_bundle(bundle, lang)
+    tests = llm.generate_tests_bundle(
+        bundle=bundle,
+        lang=lang,
+        hints=hints,
+        risks=risks,
+        mode="intent",
+    )
+    return risks, tests

@@ -33,8 +33,10 @@ class CatchCandidate:
     judge_tp_prob: float = 0.0
     judge_bucket: str = ""
     judge_rationale: str = ""
+    judge_raw: str = ""
     rule_flags: List[str] = field(default_factory=list)
     final_score: float = 0.0
+    target_files: List[str] = field(default_factory=list)
 
     @property
     def is_weak_catch(self) -> bool:

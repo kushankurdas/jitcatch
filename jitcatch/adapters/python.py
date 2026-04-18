@@ -11,7 +11,7 @@ class PythonAdapter(Adapter):
     lang = "python"
     exts = (".py",)
 
-    def prompt_hints(self, module_rel: str) -> str:
+    def prompt_hints(self, module_rel: str, repo_root: Path | None = None) -> str:
         module = module_rel.replace("/", ".").removesuffix(".py")
         return (
             f"Use pytest. Import the module under test via `from {module} import ...` "

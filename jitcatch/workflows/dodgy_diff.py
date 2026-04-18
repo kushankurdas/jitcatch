@@ -21,3 +21,18 @@ def run_dodgy_diff(
         risks=None,
         mode="dodgy",
     )
+
+
+def run_dodgy_diff_bundle(
+    llm: LLMClient,
+    bundle: str,
+    lang: str,
+    hints: str,
+) -> List[GeneratedTest]:
+    return llm.generate_tests_bundle(
+        bundle=bundle,
+        lang=lang,
+        hints=hints,
+        risks=None,
+        mode="dodgy",
+    )

@@ -25,3 +25,4 @@ def judge_candidate(
     cand.judge_tp_prob = float(verdict.get("tp_prob", 0.0))
     cand.judge_bucket = str(verdict.get("bucket", "Low"))
     cand.judge_rationale = str(verdict.get("rationale", ""))
+    cand.judge_raw = str(verdict.get("raw", ""))
