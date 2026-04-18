@@ -9,9 +9,11 @@ from ..config import CatchCandidate
 FP_REFLECTION_PAT = re.compile(
     r"\b(getattr|hasattr|setattr|inspect\.|__dict__|Object\.getPrototypeOf|Reflect\.)",
 )
-FP_MOCK_PAT = re.compile(
-    r"\b(unittest\.mock|MagicMock|mock\.patch|jest\.fn|jest\.mock|sinon\.)",
-)
+# Mock usage on its own is not a false-positive signal — middleware and
+# handler tests legitimately stub transitive deps (axios, jwt, db drivers)
+# to drive the function under test into its failure branch. A test that
+# mocks everything to the point of tautology still passes on both revs
+# and never becomes a weak catch, so no static penalty is needed.
 FP_FLAKY_PAT = re.compile(
     r"\b(time\.sleep|datetime\.now|random\.|Math\.random|requests\.(get|post)|fetch\s*\(|axios\.)",
 )
@@ -32,8 +34,6 @@ def apply_rules(cand: CatchCandidate) -> List[str]:
 
     if _match(FP_REFLECTION_PAT, test_code):
         flags.append("fp:reflection")
-    if _match(FP_MOCK_PAT, test_code):
-        flags.append("fp:mock_usage")
     if _match(FP_FLAKY_PAT, test_code):
         flags.append("fp:flakiness")
 
@@ -41,13 +41,24 @@ def apply_rules(cand: CatchCandidate) -> List[str]:
         flags.append("fp:undefined_variable")
     if child and _match(FP_IMPORT_ERR_PAT, child.stdout + child.stderr):
         flags.append("fp:broken_test_runner")
-    if parent and not parent.passed:
+    # Only penalize as flake if parent fails but child passes. When both
+    # fail the regression may be real and masked by a pre-existing error.
+    if parent and not parent.passed and child and child.passed:
         flags.append("fp:parent_unstable")
 
     if child and _match(TP_NULL_PAT, child.stdout + child.stderr):
         flags.append("tp:null_value")
     if child and _match(TP_VALUE_MISMATCH_PAT, child.stdout + child.stderr):
         flags.append("tp:value_mismatch")
+
+    # Both-fail case: if child stderr introduces an assertion line the
+    # parent stderr doesn't carry, treat that as new failure mode (TP).
+    if parent and not parent.passed and child and not child.passed:
+        p_lines = set((parent.stdout + parent.stderr).splitlines())
+        for line in (child.stdout + child.stderr).splitlines():
+            if line and line not in p_lines and _match(TP_VALUE_MISMATCH_PAT, line):
+                flags.append("tp:new_failure_mode")
+                break
 
     return flags
 

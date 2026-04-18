@@ -20,10 +20,32 @@ STRICT_JSON_SUFFIX = (
 )
 
 
+RISK_TAXONOMY_CLAUSE = (
+    "Examine the diff across these risk classes explicitly — do not skip any:\n"
+    "  - security:    auth/authz guards weakened or removed, CORS misconfig, "
+    "secrets leakage, env-var defaults flipped (e.g. development -> production), "
+    "loosened HTTP status checks (== -> >=, inverting ok/error), catch blocks that "
+    "silently next()/return instead of rejecting.\n"
+    "  - concurrency: race conditions, ordering of await / cleanup, shared mutable "
+    "state across concurrent calls, resource-lifecycle violations (delete-before-end).\n"
+    "  - validation:  relaxed limits (size/count/timeout numeric caps bumped), weaker "
+    "regex, bypassed input checks, removed null guards, removed apiKey/tenantId checks.\n"
+    "  - arithmetic:  off-by-one in <, <=, >=; sign / direction flips; operand swaps "
+    "that invert overdue-vs-remaining / earlier-vs-later; constants bumped silently.\n"
+    "  - contract:    changed return shape, HTTP method swaps (DELETE -> GET), "
+    "enum value swaps (open/closed), identifier/casing swaps that desync call sites, "
+    "trailing-token bugs (slice off-by-one in query builders).\n"
+    "For each risk return an object: "
+    '{"file": str, "line": int|null, "class": one of the classes above, "risk": str}. '
+    "Aim for one entry per independent risk — do not emit multiple entries for the "
+    "same underlying issue across call sites."
+)
+
 RISKS_SYSTEM = (
     "You are a senior software engineer reviewing a code change. "
     "Given a diff, identify risks — concrete ways the change could introduce a bug. "
-    "Return a JSON array of short risk descriptions."
+    + RISK_TAXONOMY_CLAUSE
+    + " Return a JSON array of such risk objects."
     + STRICT_JSON_SUFFIX
 )
 
@@ -31,8 +53,38 @@ RISKS_SYSTEM_BUNDLE = (
     "You are a senior software engineer reviewing a code change that spans multiple files. "
     "Given per-file parent sources, diffs, and optional usage-context files, identify risks — "
     "concrete ways the change could introduce a bug, including cross-file inconsistencies. "
-    "Return a JSON array of short risk descriptions."
+    + RISK_TAXONOMY_CLAUSE
+    + " Set `file` to the repo-relative path where the risk lives. "
+    "Return a JSON array of such risk objects."
     + STRICT_JSON_SUFFIX
+)
+
+REAL_SOURCE_CLAUSE = (
+    " CRITICAL: Tests MUST exercise the real source by `require()`/`import` of the changed file "
+    "at its repo-relative path (e.g. `require('./middleware/authentication')`, "
+    "`from app.utils import index`). Do NOT reimplement, paraphrase, or stub the function under "
+    "test inside the test body — a test that defines `parentBehavior()` and `changedBehavior()` "
+    "as local functions and asserts on those passes identically on parent and child and is "
+    "useless.\n\n"
+    "You MAY and SHOULD mock TRANSITIVE dependencies when needed to drive the "
+    "function under test into the failing branch — for example: HTTP clients "
+    "(axios / request / node-fetch), JWT libraries (force `jwt.verify` to "
+    "throw), DB drivers, SQS clients, filesystem operations. This is required "
+    "for middleware, route handlers, and any function whose branch coverage "
+    "depends on an external call's outcome. Mocking a dependency of the module "
+    "under test is not the same as stubbing the module under test — the "
+    "distinction is: the function you assert on must be the real one imported "
+    "from the changed file.\n\n"
+    "For express/connect middleware specifically: build a `req`, `res`, `next` "
+    "trio inline (plain objects with `jest`-style spies or simple arrays of "
+    "calls), invoke the exported middleware directly, and assert on what it "
+    "did to `res` / whether it called `next`. For route handlers tied to an "
+    "app instance, use `supertest` if available, otherwise invoke the handler "
+    "directly with a stubbed `req` / `res`.\n\n"
+    "If the module genuinely cannot be required (missing native dep, top-level "
+    "side effect that throws, env coupling you cannot neutralize), say so in "
+    "the rationale and skip that risk rather than emit a self-stubbed "
+    "comparison that will pass on both revisions."
 )
 
 TESTS_SYSTEM_INTENT = (
@@ -41,6 +93,7 @@ TESTS_SYSTEM_INTENT = (
     "A test that passes on the parent but fails on the child indicates the diff introduced a "
     "regression. Return strict JSON: {\"tests\":[{\"name\":str,\"code\":str,\"rationale\":str}]}. "
     "Keep tests hermetic and self-contained."
+    + REAL_SOURCE_CLAUSE
     + STRICT_JSON_SUFFIX
 )
 
@@ -49,17 +102,23 @@ TESTS_SYSTEM_DODGY = (
     "the parent. Generate unit tests against the PARENT code that assert its observable behavior "
     "precisely enough that the mutated version would fail. Return strict JSON: "
     "{\"tests\":[{\"name\":str,\"code\":str,\"rationale\":str}]}."
+    + REAL_SOURCE_CLAUSE
     + STRICT_JSON_SUFFIX
 )
 
 TESTS_SYSTEM_BUNDLE_INTENT = (
     "You are a test-generation engine. You receive a bundle of changed files (with parent source "
-    "and diffs) plus optional usage-context files. Generate unit tests that (a) pass on the parent, "
-    "and (b) exercise the risks. A test may import/require any listed CHANGED file by its "
-    "repo-relative path. Do not import usage-context files as the subject of assertions — they are "
-    "there for comprehension only. Return strict JSON: "
+    "and diffs) plus optional usage-context files, plus a list of RISKS each prefixed with "
+    "`[file:line] (class)`. Generate unit tests that (a) pass on the parent, and (b) exercise "
+    "the risks. A test may import/require any listed CHANGED file by its repo-relative path. "
+    "Do not import usage-context files as the subject of assertions — they are there for "
+    "comprehension only. For each risk in the input, emit at least one test whose "
+    "`target_files` includes the risk's file. If a risk is genuinely untestable in isolation "
+    "(e.g. CORS middleware), state the reason in that test's `rationale` and still emit the "
+    "entry so the risk is not silently dropped. Return strict JSON: "
     "{\"tests\":[{\"name\":str,\"code\":str,\"rationale\":str,\"target_files\":[str, ...]}]}. "
     "Keep tests hermetic."
+    + REAL_SOURCE_CLAUSE
     + STRICT_JSON_SUFFIX
 )
 
@@ -69,13 +128,30 @@ TESTS_SYSTEM_BUNDLE_DODGY = (
     "precisely enough that the mutated versions would fail. Tests may import/require any CHANGED "
     "file by repo-relative path. Return strict JSON: "
     "{\"tests\":[{\"name\":str,\"code\":str,\"rationale\":str,\"target_files\":[str, ...]}]}."
+    + REAL_SOURCE_CLAUSE
     + STRICT_JSON_SUFFIX
 )
 
 JUDGE_SYSTEM = (
     "You classify whether a failing test reveals a true bug in a code diff. "
     "Return strict JSON: {\"tp_prob\":float in [-1,1], \"bucket\":\"High\"|\"Medium\"|\"Low\", "
-    "\"rationale\":str}. tp_prob=1 means certainly a real bug; -1 means certainly a false positive."
+    "\"rationale\":str}. tp_prob=1 means certainly a real bug; -1 means certainly a false positive.\n\n"
+    "CRITICAL — weak-catch semantics: a regression-detection test asserts the "
+    "PARENT's observable behavior. It PASSES on parent and FAILS on child by "
+    "design — that is how regressions are detected. Do NOT mark a test as FP "
+    "merely because it \"asserts what the parent looked like\" or \"encodes the "
+    "old behavior\" — that is the intended pattern. Only mark FP when one of:\n"
+    "  - the failure is a runtime/import/syntax error unrelated to the behavior\n"
+    "    change (ModuleNotFoundError, NameError, ReferenceError);\n"
+    "  - the test is non-deterministic (time, random, network, ordering);\n"
+    "  - the test reimplements parent and child logic as local stubs and "
+    "compares those stubs to themselves (useless tautology);\n"
+    "  - the assertion targets something the diff did NOT change;\n"
+    "  - the behavior change is intentional, documented, and clearly not a bug "
+    "(e.g. an added feature, an API version bump).\n"
+    "Source-grep tests (read a file, assert a token/operator is present) are "
+    "brittle but still valid TP signal when the diff truly changed that token — "
+    "bucket them Medium, do not reject."
     + STRICT_JSON_SUFFIX
 )
 
@@ -83,6 +159,23 @@ RETRY_SUFFIX = (
     "\n\nRetry: previous response was not parseable. Return ONLY the raw "
     "JSON object / array. No prose. No code fences. No trailing commentary."
 )
+
+
+MODEL_MAX_OUTPUT_TOKENS = {
+    "claude-opus-4-7": 32000,
+    "claude-opus-4-6": 32000,
+    "claude-sonnet-4-6": 64000,
+    "claude-sonnet-4-5": 64000,
+    "claude-haiku-4-5": 64000,
+}
+DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 32000
+
+
+def _clamp_max_tokens(model: str, requested: int) -> Tuple[int, bool]:
+    ceiling = MODEL_MAX_OUTPUT_TOKENS.get(model, DEFAULT_MODEL_MAX_OUTPUT_TOKENS)
+    if requested > ceiling:
+        return ceiling, True
+    return requested, False
 
 
 @dataclass
@@ -144,9 +237,10 @@ class AnthropicClient(LLMClient):
     def __init__(
         self,
         model: str = "claude-sonnet-4-6",
-        max_tokens: int = 8192,
+        max_tokens: Optional[int] = None,
         verbose: bool = False,
         log_dir: Optional[Path] = None,
+        stage_models: Optional[dict] = None,
     ) -> None:
         try:
             import anthropic  # type: ignore
@@ -157,6 +251,9 @@ class AnthropicClient(LLMClient):
             raise RuntimeError("ANTHROPIC_API_KEY not set")
         self._client = anthropic.Anthropic(api_key=key)
         self._model = model
+        # stage_models maps stage prefix ("risks"/"tests"/"judge") to model id.
+        # Falls back to self._model when a stage isn't listed.
+        self._stage_models: dict = dict(stage_models or {})
         self._max_tokens = max_tokens
         self._verbose = verbose
         self._log_dir = Path(log_dir) if log_dir else None
@@ -165,6 +262,10 @@ class AnthropicClient(LLMClient):
         self._call_seq = 0
         self.total_calls = 0
         self.truncated_calls = 0
+
+    def _model_for(self, label: str) -> str:
+        stage = label.split(".", 1)[0]
+        return self._stage_models.get(stage, self._model)
 
     def _complete(
         self,
@@ -176,13 +277,30 @@ class AnthropicClient(LLMClient):
         self._call_seq += 1
         self.total_calls += 1
         seq = self._call_seq
-        cap = max_tokens or self._max_tokens
-        msg = self._client.messages.create(
-            model=self._model,
+        model = self._model_for(label)
+        # Priority: explicit per-call > client default (--max-tokens) > model ceiling.
+        requested = (
+            max_tokens
+            or self._max_tokens
+            or MODEL_MAX_OUTPUT_TOKENS.get(model, DEFAULT_MODEL_MAX_OUTPUT_TOKENS)
+        )
+        cap, clamped = _clamp_max_tokens(model, requested)
+        if clamped and self._verbose:
+            print(
+                f"[jitcatch] call={seq} label={label} clamped max_tokens "
+                f"{requested} -> {cap} (model {model} ceiling)",
+                file=sys.stderr,
+            )
+        # Use streaming so large caps don't trip the SDK's 10-min
+        # non-streaming guard. get_final_message() yields the same
+        # Message shape the non-streaming path returned.
+        with self._client.messages.stream(
+            model=model,
             max_tokens=cap,
             system=system,
             messages=[{"role": "user", "content": user}],
-        )
+        ) as stream:
+            msg = stream.get_final_message()
         parts: List[str] = []
         for block in msg.content:
             if getattr(block, "type", None) == "text":
@@ -203,7 +321,7 @@ class AnthropicClient(LLMClient):
             log_path.write_text(
                 f"# label: {label}\n"
                 f"# seq: {seq}\n"
-                f"# model: {self._model}\n"
+                f"# model: {model}\n"
                 f"# max_tokens_cap: {cap}\n"
                 f"# stop_reason: {stop_reason}\n"
                 f"# input_tokens: {in_tok}\n"
@@ -215,7 +333,7 @@ class AnthropicClient(LLMClient):
 
         if self._verbose:
             print(
-                f"[jitcatch] call={seq} label={label} "
+                f"[jitcatch] call={seq} label={label} model={model} "
                 f"stop_reason={stop_reason} in={in_tok} out={out_tok} "
                 f"cap={cap} log={log_path or '-'}",
                 file=sys.stderr,
@@ -344,11 +462,15 @@ class AnthropicClient(LLMClient):
             f"--- TEST CODE ---\n{test_code}\n\n"
             f"--- FAILURE OUTPUT ---\n{failure}"
         )
-        out, _ = self._complete(JUDGE_SYSTEM, user, label="judge", max_tokens=1024)
+        out, _ = self._complete(JUDGE_SYSTEM, user, label="judge", max_tokens=MODEL_MAX_OUTPUT_TOKENS.get(
+                self._model_for("judge"), DEFAULT_MODEL_MAX_OUTPUT_TOKENS
+            ))
         parsed = _parse_judge(out)
         if parsed.get("_unparseable"):
             retry_out, _ = self._complete(
-                JUDGE_SYSTEM, user + RETRY_SUFFIX, label="judge.retry", max_tokens=1024
+                JUDGE_SYSTEM, user + RETRY_SUFFIX, label="judge.retry", max_tokens=MODEL_MAX_OUTPUT_TOKENS.get(
+                self._model_for("judge"), DEFAULT_MODEL_MAX_OUTPUT_TOKENS
+            )
             )
             retry_parsed = _parse_judge(retry_out)
             if not retry_parsed.get("_unparseable"):
@@ -552,6 +674,28 @@ def _recover_truncated_tests_json(text: str) -> Optional[str]:
     return '{"tests":[' + ",".join(completed) + "]}"
 
 
+def _format_risk_entry(obj: Any) -> Optional[str]:
+    """Normalize a risk (dict or scalar) to a single display string.
+    Objects become `[file:line] (class) risk` so downstream consumers
+    can regex out the metadata for report grouping."""
+    if isinstance(obj, (str, int, float)):
+        return str(obj)
+    if not isinstance(obj, dict):
+        return None
+    risk = obj.get("risk") or obj.get("description") or obj.get("text")
+    if not risk:
+        return None
+    file = obj.get("file") or obj.get("path") or ""
+    line = obj.get("line")
+    cls = obj.get("class") or obj.get("category") or ""
+    head = ""
+    if file:
+        head = f"[{file}:{line}]" if line is not None else f"[{file}]"
+    if cls:
+        head = (head + " " if head else "") + f"({cls})"
+    return f"{head} {risk}".strip() if head else str(risk)
+
+
 def _parse_json_array(text: str) -> List[str]:
     candidates: List[str] = [text.strip(), _strip_code_fence(text)]
     # also try to find a bare [...] in the text
@@ -564,9 +708,19 @@ def _parse_json_array(text: str) -> List[str]:
         except (json.JSONDecodeError, ValueError):
             continue
         if isinstance(data, list):
-            return [str(x) for x in data if isinstance(x, (str, int, float))]
+            out: List[str] = []
+            for x in data:
+                formatted = _format_risk_entry(x)
+                if formatted:
+                    out.append(formatted)
+            return out
         if isinstance(data, dict) and isinstance(data.get("risks"), list):
-            return [str(x) for x in data["risks"]]
+            out = []
+            for x in data["risks"]:
+                formatted = _format_risk_entry(x)
+                if formatted:
+                    out.append(formatted)
+            return out
     return []
 
 

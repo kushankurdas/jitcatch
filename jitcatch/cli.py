@@ -72,7 +72,26 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
         default="both",
     )
     p.add_argument("--stub", action="store_true", help="use StubClient (no API calls)")
-    p.add_argument("--model", default="claude-sonnet-4-6")
+    p.add_argument(
+        "--model",
+        default="claude-sonnet-4-6",
+        help="default model for any stage without a stage-specific override.",
+    )
+    p.add_argument(
+        "--model-risks",
+        default=None,
+        help="model for risk inference (reasoning-heavy). Defaults to --model.",
+    )
+    p.add_argument(
+        "--model-tests",
+        default=None,
+        help="model for test generation (bulk output). Defaults to --model.",
+    )
+    p.add_argument(
+        "--model-judge",
+        default=None,
+        help="model for judging weak catches (reasoning-heavy). Defaults to --model.",
+    )
     p.add_argument("--no-judge", action="store_true", help="skip LLM-as-judge")
     p.add_argument("--timeout", type=int, default=60, help="per-test timeout (s)")
     p.add_argument("--out", default="jitcatch_report.json", help="JSON report path")
@@ -80,9 +99,10 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--max-tokens",
         type=int,
-        default=8192,
-        help="per-call output token cap for the LLM (default 8192). "
-             "Bump higher if you see stop_reason=max_tokens in verbose logs.",
+        default=None,
+        help="per-call output token cap. Defaults to the current call's model "
+             "ceiling (32k opus, 64k sonnet/haiku). Pass a lower number to save "
+             "spend at the risk of truncation (stop_reason=max_tokens).",
     )
     p.add_argument(
         "--log-dir",
@@ -100,11 +120,17 @@ def _make_llm(args: argparse.Namespace, repo: Path) -> LLMClient:
         log_dir = Path(args.log_dir)
     elif args.verbose:
         log_dir = repo / ".jitcatch_logs"
+    stage_models = {
+        "risks": args.model_risks or args.model,
+        "tests": args.model_tests or args.model,
+        "judge": args.model_judge or args.model,
+    }
     return AnthropicClient(
         model=args.model,
         max_tokens=args.max_tokens,
         verbose=args.verbose,
         log_dir=log_dir,
+        stage_models=stage_models,
     )
 
 

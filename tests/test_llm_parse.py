@@ -94,6 +94,36 @@ class RecoverTruncatedTest(unittest.TestCase):
         self.assertIn('"first"', salvaged)
 
 
+class ParseRisksTaxonomyTest(unittest.TestCase):
+    def test_legacy_string_array(self) -> None:
+        out = llm._parse_json_array('["risk A", "risk B"]')
+        self.assertEqual(out, ["risk A", "risk B"])
+
+    def test_structured_object_array(self) -> None:
+        raw = (
+            '[{"file":"a.js","line":12,"class":"security","risk":"auth bypass"},'
+            '{"file":"b.js","line":null,"class":"arithmetic","risk":"off-by-one"}]'
+        )
+        out = llm._parse_json_array(raw)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0], "[a.js:12] (security) auth bypass")
+        self.assertEqual(out[1], "[b.js] (arithmetic) off-by-one")
+
+    def test_mixed_forms_tolerated(self) -> None:
+        raw = '["plain string", {"file":"c.js","line":3,"class":"validation","risk":"loose regex"}]'
+        out = llm._parse_json_array(raw)
+        self.assertEqual(out[0], "plain string")
+        self.assertEqual(out[1], "[c.js:3] (validation) loose regex")
+
+    def test_object_without_file_renders_bare_risk(self) -> None:
+        out = llm._parse_json_array('[{"risk":"something bad"}]')
+        self.assertEqual(out, ["something bad"])
+
+    def test_format_risk_entry_rejects_unknowns(self) -> None:
+        self.assertIsNone(llm._format_risk_entry(None))
+        self.assertIsNone(llm._format_risk_entry({"no_risk_field": True}))
+
+
 class ParseJudgeTest(unittest.TestCase):
     def test_strict(self) -> None:
         out = llm._parse_judge('{"tp_prob":0.9,"bucket":"High","rationale":"r"}')
