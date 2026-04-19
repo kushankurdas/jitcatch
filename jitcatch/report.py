@@ -15,14 +15,61 @@ _RISK_PREFIX_RE = re.compile(
 )
 
 
+def _file_link(path: str, line: Optional[int], meta: Dict[str, str]) -> str:
+    """Build a local file:// link for a repo-relative path. Label is always
+    just the path (CLI users read by path, not path:line). Line anchor is
+    appended to the URL when known; most markdown previews that honor
+    file:// ignore it anyway, but editors like VS Code pick it up."""
+    label_md = f"`{path}`"
+    repo = meta.get("repo")
+    if not repo:
+        return label_md
+    url = f"file://{repo.rstrip('/')}/{path}"
+    if line:
+        url += f"#L{line}"
+    return f"[{label_md}]({url})"
+
+
 def _severity_from_score(score: float) -> str:
-    if score >= 0.90:
+    if score >= 0.95:
+        return "Critical"
+    if score >= 0.80:
         return "High"
     if score >= 0.50:
         return "Medium"
-    if score >= 0.00:
+    if score >= 0.20:
         return "Low"
-    return ""
+    if score >= 0.00:
+        return "Trivial"
+    return "Info"
+
+
+_SEVERITY_BADGES = {
+    "Critical": "🔴",
+    "High": "🟠",
+    "Medium": "🟡",
+    "Low": "🟢",
+    "Trivial": "⚪",
+    "Info": "🔵",
+}
+
+
+def _severity_md(severity: str) -> str:
+    """Colored severity label via emoji — renders in every markdown viewer
+    (GitHub, VS Code, plain text), unlike inline HTML styles which most
+    previewers strip."""
+    if not severity:
+        return "-"
+    badge = _SEVERITY_BADGES.get(severity, "")
+    return f"{badge} **{severity}**".strip()
+
+
+def _pretty_flag(flag: str) -> str:
+    """`tp:value_mismatch` -> `Value Mismatch`. Strips the tp:/fp: prefix
+    and title-cases the remainder so readers don't need to decode our
+    internal taxonomy."""
+    token = flag.split(":", 1)[1] if ":" in flag else flag
+    return token.replace("_", " ").title()
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]+")
@@ -75,6 +122,40 @@ def to_dict(cand: CatchCandidate) -> dict:
     return d
 
 
+def _dedup_key(cand: CatchCandidate) -> Tuple:
+    """Collapse weak catches that describe the same regression. Key on the
+    risk file only — line numbers drift between tests that catch the same
+    mutation (one test omits the line, another picks the + side), so
+    keying on line splits duplicates. Falls back to sorted target_files
+    when risks didn't parse a file."""
+    file, _line, _cls, _body = _risk_meta_for(cand)
+    if file:
+        return ("risk", file)
+    return ("target", tuple(sorted(cand.target_files)))
+
+
+def _dedup_weak(weak: List[CatchCandidate]) -> Tuple[List[CatchCandidate], Dict[int, int]]:
+    """Keep the highest-scoring candidate per dedup key, preserving the
+    input order. Returns (deduped_list, {id(rep) -> group_size})."""
+    groups: Dict[Tuple, List[CatchCandidate]] = {}
+    order: List[Tuple] = []
+    for c in weak:
+        k = _dedup_key(c)
+        if k not in groups:
+            groups[k] = []
+            order.append(k)
+        groups[k].append(c)
+    deduped: List[CatchCandidate] = []
+    sizes: Dict[int, int] = {}
+    for k in order:
+        cands = sorted(groups[k], key=lambda c: c.final_score, reverse=True)
+        rep = cands[0]
+        deduped.append(rep)
+        sizes[id(rep)] = len(cands)
+    deduped.sort(key=lambda c: c.final_score, reverse=True)
+    return deduped, sizes
+
+
 def write_json(candidates: List[CatchCandidate], out_path: Path) -> None:
     payload = {
         "summary": {
@@ -87,11 +168,12 @@ def write_json(candidates: List[CatchCandidate], out_path: Path) -> None:
 
 
 def render_text(candidates: List[CatchCandidate]) -> str:
-    weak = [c for c in candidates if c.is_weak_catch]
-    weak.sort(key=lambda c: c.final_score, reverse=True)
+    weak_all = [c for c in candidates if c.is_weak_catch]
+    weak, sizes = _dedup_weak(weak_all)
     lines: list[str] = []
     lines.append(f"Total generated: {len(candidates)}")
-    lines.append(f"Weak catches:    {len(weak)}")
+    lines.append(f"Weak catches:    {len(weak)}"
+                 + (f" (deduped from {len(weak_all)})" if len(weak) != len(weak_all) else ""))
     lines.append("")
     if not weak:
         lines.append("No weak catches found.")
@@ -100,7 +182,9 @@ def render_text(candidates: List[CatchCandidate]) -> str:
     lines.append("RANKED WEAK CATCHES (higher score = likelier true regression)")
     lines.append("=" * 70)
     for i, c in enumerate(weak, 1):
-        lines.append(f"\n#{i}  score={c.final_score:+.2f}  workflow={c.workflow}")
+        dupe = sizes.get(id(c), 1)
+        extra = f"  ×{dupe}" if dupe > 1 else ""
+        lines.append(f"\n#{i}  score={c.final_score:+.2f}  workflow={c.workflow}{extra}")
         lines.append(f"    test:    {c.test.name}")
         if c.target_files:
             lines.append(f"    files:   {', '.join(c.target_files)}")
@@ -164,6 +248,25 @@ def _split_hunks(diff: str) -> List[Tuple[int, int, str]]:
     if in_hunk and buf:
         hunks.append((start, length, "\n".join(buf)))
     return hunks
+
+
+_DIFF_PREAMBLE_PREFIXES = ("diff --git ", "index ", "--- ", "+++ ", "new file mode", "deleted file mode", "similarity index", "rename ")
+
+
+def _strip_hunk_header(body: str) -> str:
+    """Drop the `diff --git` / `index` / `---` / `+++` preamble and the
+    leading `@@ -a,b +c,d @@` line. The file link above the block carries
+    the line-number context; headers are visual noise."""
+    out: List[str] = []
+    for ln in body.splitlines():
+        if ln.startswith(_DIFF_PREAMBLE_PREFIXES):
+            continue
+        if _HUNK_HEADER_RE.match(ln):
+            continue
+        out.append(ln)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out)
 
 
 def _hunk_around(diff: str, line: Optional[int]) -> str:
@@ -238,11 +341,11 @@ def write_markdown(
     meta = meta or {}
     file_diffs = file_diffs or {}
 
-    weak = [c for c in candidates if c.is_weak_catch]
-    weak.sort(key=lambda c: c.final_score, reverse=True)
+    weak_all = [c for c in candidates if c.is_weak_catch]
+    weak, _ = _dedup_weak(weak_all)
 
     md: List[str] = []
-    md.append("# jitcatch report")
+    md.append("# JitCatch Report")
     md.append("")
 
     # Header metadata.
@@ -255,126 +358,50 @@ def write_markdown(
                 md.append(f"| **{k}** | `{v}` |")
         md.append("")
 
-    total = len(candidates)
+    # total = len(candidates)
     n_weak = len(weak)
-    md.append(f"**Generated:** {total} tests &nbsp;•&nbsp; **Weak catches:** {n_weak}")
-    md.append("")
+    # md.append(f"**Generated:** {total} tests &nbsp;•&nbsp; **Weak catches:** {n_weak}")
+    # md.append("")
 
     if n_weak == 0:
         md.append("_No weak catches found — no test passed on parent and failed on child._")
         md.append("")
     else:
-        # Review summary — severity-tagged one-liners above everything else.
-        # Group by (risk_file, line) so each unique bug gets one row, even
-        # when the bundle workflow lumps every changed file into target_files.
-        groups: Dict[Tuple[Optional[str], Optional[int]], List[CatchCandidate]] = {}
-        order: List[Tuple[Optional[str], Optional[int]]] = []
-        meta_cache: Dict[int, Tuple[Optional[str], Optional[int], str, str]] = {}
-        for c in weak:
-            file, line, cls, body = _risk_meta_for(c)
-            meta_cache[id(c)] = (file, line, cls, body)
-            key = (file, line)
-            if key not in groups:
-                groups[key] = []
-                order.append(key)
-            groups[key].append(c)
+        meta_cache: Dict[int, Tuple[Optional[str], Optional[int], str, str]] = {
+            id(c): _risk_meta_for(c) for c in weak
+        }
 
-        md.append("## Review summary")
-        md.append("")
-        md.append("| Severity | File | Class | Risk | Score | |")
-        md.append("| --- | --- | --- | --- | --- | --- |")
-        for key in order:
-            cands = groups[key]
-            # Representative = highest-scoring candidate in the group.
-            cands.sort(key=lambda c: c.final_score, reverse=True)
-            rep = cands[0]
-            file, line, cls, body = meta_cache[id(rep)]
-            severity = _severity_from_score(rep.final_score)
-            if not severity:
-                continue  # skip negative-score rows from the summary
-            target = file or (rep.target_files[0] if rep.target_files else "-")
-            file_cell = f"`{target}:{line}`" if line else f"`{target}`"
-            cls_cell = f"`{cls}`" if cls else "-"
-            risk_cell = body.replace("|", "\\|")[:160] or rep.test.name
-            score_cell = f"`{rep.final_score:+.2f}`"
-            badge = f"×{len(cands)}" if len(cands) > 1 else ""
-            md.append(
-                f"| **{severity}** | {file_cell} | {cls_cell} | {risk_cell} "
-                f"| {score_cell} | {badge} |"
-            )
-        md.append("")
-
-        md.append("## TL;DR")
-        md.append("")
-        hit_files: list[str] = []
-        for c in weak:
-            for f in c.target_files:
-                if f not in hit_files:
-                    hit_files.append(f)
-        md.append(
-            f"{n_weak} likely regression{'s' if n_weak != 1 else ''} "
-            f"across {len(hit_files)} file{'s' if len(hit_files) != 1 else ''}:"
-        )
-        for f in hit_files:
-            md.append(f"- `{f}`")
-        md.append("")
-
-    # Changed files + diffs (with line numbers via @@ hunk headers).
-    if file_diffs:
-        md.append("<details>")
-        md.append("<summary><strong>Changed files</strong> — diffs with line numbers</summary>")
-        md.append("")
-        for rel, diff in file_diffs.items():
-            if not diff.strip():
-                continue
-            md.append(f"### `{rel}`")
-            md.append("")
-            # Line-number anchors are in the diff hunk headers already.
-            md.append("```diff")
-            md.append(diff.rstrip())
-            md.append("```")
-            md.append("")
-        md.append("</details>")
-        md.append("")
+        # md.append("## Findings")
+        # md.append("")
+        # hit_files: list[str] = []
+        # for c in weak:
+        #     for f in c.target_files:
+        #         if f not in hit_files:
+        #             hit_files.append(f)
+        # md.append(
+        #     f"{n_weak} likely regression{'s' if n_weak != 1 else ''} "
+        #     f"across {len(hit_files)} file{'s' if len(hit_files) != 1 else ''}:"
+        # )
+        # for f in hit_files:
+        #     md.append(f"- {_file_link(f, None, meta)}")
+        # md.append("")
 
     # Weak catches — ranked.
     if weak:
         md.append("<details>")
-        md.append("<summary><strong>Weak catches (ranked)</strong> — full tests, judge rationales, child failure logs</summary>")
+        # md.append("<summary><strong>Weak catches (ranked)</strong> — full tests, judge rationales, child failure logs</summary>")
         md.append("")
         for i, c in enumerate(weak, 1):
             md.append(f"### {i}. {c.test.name}")
             md.append("")
-            md.append("| Field | Value |")
-            md.append("| --- | --- |")
-            md.append(f"| **Score** | `{c.final_score:+.2f}` |")
-            md.append(f"| **Workflow** | `{c.workflow}` |")
-            if c.target_files:
-                md.append(f"| **Target files** | {', '.join(f'`{f}`' for f in c.target_files)} |")
-            md.append(f"| **Judge** | tp_prob=`{c.judge_tp_prob:+.2f}` bucket=`{c.judge_bucket or '-'}` |")
-            if c.rule_flags:
-                md.append(f"| **Flags** | {', '.join(f'`{f}`' for f in c.rule_flags)} |")
-            md.append("")
 
-            if c.test.rationale:
-                md.append("**Why this matters**")
-                md.append("")
-                md.append(f"> {c.test.rationale.strip()}")
-                md.append("")
+            risk_file, risk_line, _risk_cls, risk_body = meta_cache.get(
+                id(c), (None, None, "", "")
+            )
 
-            if c.judge_rationale:
-                md.append("**Judge says**")
-                md.append("")
-                md.append(f"> {c.judge_rationale.strip()}")
-                md.append("")
-
-            # Per-target-file diff excerpt — narrow to a single file and
-            # a single hunk. Risk file+line wins when available; otherwise
-            # score target_files by token overlap with the test identity.
+            # Diff that triggered this — filename is a clickable link into
+            # source at the child rev (GitHub blob when available).
             if c.target_files and file_diffs:
-                risk_file, risk_line, _, _ = meta_cache.get(
-                    id(c), (None, None, "", "")
-                )
                 focus_file: Optional[str] = None
                 focus_line: Optional[int] = None
                 if risk_file and file_diffs.get(risk_file):
@@ -391,17 +418,38 @@ def write_markdown(
                             c.test.rationale or ""
                         )
                         body = _best_hunk_by_tokens(diff, tokens)
-                    md.append("**Diff that triggered this**")
-                    md.append("")
-                    md.append(f"*{focus_file}*")
+                    md.append(_file_link(focus_file, focus_line, meta))
                     md.append("")
                     md.append("```diff")
-                    md.append(body.rstrip())
+                    md.append(_strip_hunk_header(body))
                     md.append("```")
                     md.append("")
+                    severity = _severity_from_score(c.final_score) or "-"
+                    flags_text = (
+                        ", ".join(_pretty_flag(f) for f in c.rule_flags)
+                        if c.rule_flags else "-"
+                    )
+                    md.append(
+                        f"**Score:** `{c.final_score:+.2f}` &nbsp;•&nbsp; "
+                        f"**Severity:** {_severity_md(severity)} &nbsp;•&nbsp; "
+                        f"**Flags:** {flags_text}"
+                    )
+                    md.append("")
+
+            if c.test.rationale:
+                md.append("**Why this matters**")
+                md.append("")
+                md.append(f"> {c.test.rationale.strip()}")
+                md.append("")
+
+            if c.judge_rationale:
+                md.append("**Judge says**")
+                md.append("")
+                md.append(f"> {c.judge_rationale.strip()}")
+                md.append("")
 
             # Generated test code.
-            md.append("**Test**")
+            md.append("**Unit Test**")
             md.append("")
             md.append(f"```{_lang_hint(c.target_files[0]) if c.target_files else ''}")
             md.append(c.test.code.rstrip())
@@ -409,19 +457,6 @@ def write_markdown(
             md.append("")
 
         md.append("</details>")
-        md.append("")
-
-    # Also list tests that didn't catch — helpful signal for noise.
-    non_weak = [c for c in candidates if not c.is_weak_catch]
-    if non_weak:
-        md.append("## Generated tests that did not catch (noise check)")
-        md.append("")
-        md.append("| # | Workflow | Parent | Child | Test |")
-        md.append("| --- | --- | --- | --- | --- |")
-        for i, c in enumerate(non_weak, 1):
-            p = c.parent_result.status if c.parent_result else "-"
-            ch = c.child_result.status if c.child_result else "-"
-            md.append(f"| {i} | `{c.workflow}` | `{p}` | `{ch}` | {c.test.name} |")
         md.append("")
 
     out_path.write_text("\n".join(md))
