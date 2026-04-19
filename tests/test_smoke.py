@@ -122,7 +122,7 @@ class SmokeTest(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _run_cli(self, repo: Path, filename: str, out_path: Path) -> subprocess.CompletedProcess:
+    def _run_cli(self, repo: Path, filename: str, report_name: str) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env["PYTHONPATH"] = str(self.repo_root) + os.pathsep + env.get("PYTHONPATH", "")
         return subprocess.run(
@@ -130,7 +130,7 @@ class SmokeTest(unittest.TestCase):
                 sys.executable, "-m", "jitcatch.cli", "run", str(repo),
                 "--file", filename,
                 "--stub", "--no-judge",
-                "--out", str(out_path),
+                "--filename", report_name,
             ],
             capture_output=True,
             text=True,
@@ -140,9 +140,9 @@ class SmokeTest(unittest.TestCase):
     def test_python_fixture_detects_bug(self) -> None:
         repo = self.tmp / "py"
         make_repo(repo, "calc.py", PY_PARENT_CALC, PY_CHILD_CALC, PY_STUB)
-        out = self.tmp / "py_report.json"
-        proc = self._run_cli(repo, "calc.py", out)
+        proc = self._run_cli(repo, "calc.py", "py_report")
         self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+        out = repo / ".jitcatch" / "output" / "py_report.json"
         data = json.loads(out.read_text())
         self.assertGreaterEqual(data["summary"]["weak_catches"], 1, msg=proc.stdout)
         weak = [c for c in data["candidates"] if c["is_weak_catch"]]
@@ -154,9 +154,9 @@ class SmokeTest(unittest.TestCase):
             self.skipTest("node not installed")
         repo = self.tmp / "js"
         make_repo(repo, "calc.mjs", JS_PARENT_CALC, JS_CHILD_CALC, JS_STUB)
-        out = self.tmp / "js_report.json"
-        proc = self._run_cli(repo, "calc.mjs", out)
+        proc = self._run_cli(repo, "calc.mjs", "js_report")
         self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+        out = repo / ".jitcatch" / "output" / "js_report.json"
         data = json.loads(out.read_text())
         self.assertGreaterEqual(data["summary"]["weak_catches"], 1, msg=proc.stdout)
         weak = [c for c in data["candidates"] if c["is_weak_catch"]]

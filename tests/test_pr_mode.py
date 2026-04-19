@@ -101,11 +101,11 @@ class PRModeTest(unittest.TestCase):
         if shutil.which("node") is None:
             self.skipTest("node not installed")
         self._make_repo()
-        out = self.tmp / "report.json"
         proc = self._run_cli(
-            "last", str(self.repo), "--stub", "--no-judge", "--out", str(out),
+            "last", str(self.repo), "--stub", "--no-judge", "--filename", "report",
         )
         self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+        out = self.repo / ".jitcatch" / "output" / "report.json"
         data = json.loads(out.read_text())
         self.assertGreaterEqual(data["summary"]["weak_catches"], 1, msg=proc.stdout)
         weak = [c for c in data["candidates"] if c["is_weak_catch"]]

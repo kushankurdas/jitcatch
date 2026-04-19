@@ -94,7 +94,13 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--no-judge", action="store_true", help="skip LLM-as-judge")
     p.add_argument("--timeout", type=int, default=60, help="per-test timeout (s)")
-    p.add_argument("--out", default="jitcatch_report.json", help="JSON report path")
+    p.add_argument(
+        "--filename",
+        default=None,
+        help="report base name (no extension). Writes "
+             "<repo>/.jitcatch/output/<name>.json and .md. "
+             "Auto-generated from timestamp when omitted.",
+    )
     p.add_argument("--verbose", action="store_true", help="print debug info (empty LLM responses, etc.)")
     p.add_argument(
         "--max-tokens",
@@ -107,8 +113,8 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--log-dir",
         default=None,
-        help="directory for per-call LLM transcripts (default: .jitcatch_logs "
-             "under the repo when --verbose is on). Logs are untruncated.",
+        help="override directory for per-call LLM transcripts (default: "
+             "<repo>/.jitcatch/logs/ when --verbose is on). Logs are untruncated.",
     )
 
 
@@ -119,7 +125,7 @@ def _make_llm(args: argparse.Namespace, repo: Path) -> LLMClient:
     if args.log_dir:
         log_dir = Path(args.log_dir)
     elif args.verbose:
-        log_dir = repo / ".jitcatch_logs"
+        log_dir = repo / ".jitcatch" / "logs"
     stage_models = {
         "risks": args.model_risks or args.model,
         "tests": args.model_tests or args.model,
@@ -335,16 +341,28 @@ def _cmd_bundle_inner(args: argparse.Namespace, repo: Path, pair: revs.RevPair) 
 
 
 def _emit_empty_report(args: argparse.Namespace, meta: Dict[str, str]) -> None:
-    out_path = Path(args.out)
-    report.write_json([], out_path)
-    report.write_markdown([], _md_path_for(out_path), meta=meta, file_diffs={})
+    repo = Path(meta.get("repo") or args.repo).resolve()
+    json_path, md_path = _resolve_output_paths(args, repo)
+    report.write_json([], json_path)
+    report.write_markdown([], md_path, meta=meta, file_diffs={})
     print(report.render_text([]))
 
 
-def _md_path_for(json_path: Path) -> Path:
-    if json_path.suffix.lower() == ".json":
-        return json_path.with_suffix(".md")
-    return json_path.with_name(json_path.name + ".md")
+def _resolve_output_paths(args: argparse.Namespace, repo: Path) -> Tuple[Path, Path]:
+    """Return (json_path, md_path) under <repo>/.jitcatch/output/.
+    Filename comes from --filename (stem only); falls back to a
+    timestamped default. The output directory is created on demand."""
+    import time as _time
+    name = (args.filename or "").strip()
+    if not name:
+        name = f"jitcatch-{_time.strftime('%Y%m%d-%H%M%S')}"
+    # Strip accidental extensions / path separators.
+    name = Path(name).name
+    if name.lower().endswith((".json", ".md")):
+        name = Path(name).stem
+    out_dir = repo / ".jitcatch" / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"{name}.json", out_dir / f"{name}.md"
 
 
 def _numstat(repo: Path, parent: str, child: str) -> str:
@@ -413,12 +431,11 @@ def _evaluate_and_report(
                 cand.final_score = score_candidate(cand)
                 candidates.append(cand)
 
-    out_path = Path(args.out)
-    report.write_json(candidates, out_path)
-    md_path = _md_path_for(out_path)
+    json_path, md_path = _resolve_output_paths(args, repo)
+    report.write_json(candidates, json_path)
     report.write_markdown(candidates, md_path, meta=meta, file_diffs=file_diffs)
     print(report.render_text(candidates))
-    print(f"\nJSON report: {out_path}")
+    print(f"\nJSON report: {json_path}")
     print(f"Markdown:    {md_path}")
     # LLM call stats — surfaces truncation fast.
     total = getattr(llm, "total_calls", None)
