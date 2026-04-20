@@ -253,7 +253,7 @@ class ReportWithFindingsTest(unittest.TestCase):
             self.assertIn("## Findings", body)
             self.assertIn("auth bypass", body)
             self.assertIn("security", body)
-            self.assertIn("LLM review", body)
+            self.assertIn("review-only", body)
 
     def test_markdown_empty_findings_omits_section(self):
         import tempfile

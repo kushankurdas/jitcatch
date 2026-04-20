@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import asdict
 from pathlib import Path
@@ -16,18 +17,24 @@ _RISK_PREFIX_RE = re.compile(
 
 
 def _file_link(path: str, line: Optional[int], meta: Dict[str, str]) -> str:
-    """Build a local file:// link for a repo-relative path. Label is always
-    just the path (CLI users read by path, not path:line). Line anchor is
-    appended to the URL when known; most markdown previews that honor
-    file:// ignore it anyway, but editors like VS Code pick it up."""
-    label_md = f"`{path}`"
+    """Build a clickable link to the source file. Prefers a relative
+    path from the report's own directory — VS Code's built-in markdown
+    preview blocks `file://` links for security, but renders relative
+    paths. Falls back to `file://` when we don't know the output dir,
+    and to a bare code span when we don't even know the repo."""
+    label = f"{path}:{line}" if line else path
     repo = meta.get("repo")
     if not repo:
-        return label_md
-    url = f"file://{repo.rstrip('/')}/{path}"
+        return f"`{label}`"
+    abs_src = os.path.join(repo.rstrip("/"), path)
+    out_dir = meta.get("out_dir")
+    if out_dir:
+        href = os.path.relpath(abs_src, out_dir)
+    else:
+        href = f"file://{abs_src}"
     if line:
-        url += f"#L{line}"
-    return f"[{label_md}]({url})"
+        href += f"#L{line}"
+    return f"[{label}]({href})"
 
 
 def _severity_from_score(score: float) -> str:
@@ -381,6 +388,16 @@ def _lang_hint(path: str) -> str:
     return ""
 
 
+_OLD_NEW_RE = re.compile(r"\s+(New:|Before:|After:)")
+
+
+def _format_rationale(text: str) -> str:
+    """Put Old:/New: (and Before:/After:) on separate lines so the
+    reader can compare them side-by-side instead of parsing a single
+    wall of prose."""
+    return _OLD_NEW_RE.sub(r"\n\1", text)
+
+
 _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
@@ -499,7 +516,8 @@ def write_markdown(
     the report can show hunk headers (line numbers) and +/- lines.
     `findings` are agentic-reviewer outputs — a separate evidence channel
     from failing-test weak catches."""
-    meta = meta or {}
+    meta = dict(meta or {})
+    meta.setdefault("out_dir", str(out_path.parent))
     file_diffs = file_diffs or {}
     findings = list(findings or [])
 
@@ -567,22 +585,11 @@ def write_markdown(
             cat = cls or "-"
             conf = c.judge_tp_prob
 
-        evidence: List[str] = []
-        if tests:
-            evidence.append(
-                f"{len(tests)} failing test" + ("s" if len(tests) > 1 else "")
-            )
-        if f:
-            evidence.append("LLM review")
-        evidence_md = " + ".join(evidence) if evidence else "-"
-
         loc_md = _file_link(loc_path, line, meta) if loc_path else "`(no file)`"
-        line_str = f":{line}" if line else ""
         md.append(
-            f"**Location:** {loc_md}{line_str} &nbsp;•&nbsp; "
+            f"**Location:** {loc_md} &nbsp;•&nbsp; "
             f"**Severity:** {_severity_md(sev)} &nbsp;•&nbsp; "
             f"**Category:** `{cat}` &nbsp;•&nbsp; "
-            f"**Evidence:** {evidence_md} &nbsp;•&nbsp; "
             f"**Confidence:** `{conf:.2f}`"
         )
         md.append("")
@@ -614,7 +621,13 @@ def write_markdown(
         if rationale.strip():
             md.append("**Why this is a bug**")
             md.append("")
-            md.append(f"> {rationale.strip()}")
+            formatted = _format_rationale(rationale.strip())
+            for ln in formatted.split("\n"):
+                md.append(f"> {ln}" if ln else ">")
+            md.append("")
+
+        if f and f.validator_note and "already caught" not in f.validator_note:
+            md.append(f"_Expert says: {f.validator_note}_")
             md.append("")
 
         if tests:
@@ -622,19 +635,17 @@ def write_markdown(
             label = f"Unit test{'s' if len(tests) > 1 else ''} ({len(tests)})"
             md.append(f"<summary>{label}</summary>")
             md.append("")
-            for t in tests:
+            multi = len(tests) > 1
+            for idx, t in enumerate(tests, 1):
                 lang = _lang_hint(t.target_files[0]) if t.target_files else ""
-                md.append(f"**`{t.test.name}`**")
+                prefix = f"{idx}. " if multi else ""
+                md.append(f"**{prefix}`{t.test.name}`**")
                 md.append("")
                 md.append(f"```{lang}")
                 md.append(t.test.code.rstrip())
                 md.append("```")
                 md.append("")
             md.append("</details>")
-            md.append("")
-
-        if f and f.validator_note and "already caught" not in f.validator_note:
-            md.append(f"_Validator: {f.validator_note}_")
             md.append("")
 
     out_path.write_text("\n".join(md))

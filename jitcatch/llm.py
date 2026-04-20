@@ -606,7 +606,7 @@ class AnthropicClient(LLMClient):
                 kept.append(f)
                 continue
             verdict = str(v.get("verdict", "keep")).lower()
-            note = str(v.get("note", ""))[:160]
+            note = str(v.get("note", ""))
             if verdict == "drop":
                 f.validator_verdict = "drop"
                 f.validator_note = note
