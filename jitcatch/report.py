@@ -388,14 +388,20 @@ def _lang_hint(path: str) -> str:
     return ""
 
 
-_OLD_NEW_RE = re.compile(r"\s+(New:|Before:|After:)")
+_OLD_NEW_RE = re.compile(r"(?<=[\.\?!])\s+(New\b|After\b|Before\b)")
 
 
 def _format_rationale(text: str) -> str:
-    """Put Old:/New: (and Before:/After:) on separate lines so the
-    reader can compare them side-by-side instead of parsing a single
-    wall of prose."""
-    return _OLD_NEW_RE.sub(r"\n\1", text)
+    """Put Old/New (and Before/After) comparison sentences on separate
+    paragraphs so the reader can compare them side-by-side. Splits on
+    a sentence boundary (`.`, `?`, `!`) followed by New/After/Before —
+    handles bare `New:`, qualified forms like `New code:` / `New
+    guard:`, and unpunctuated intros like `New code returns count:` /
+    `After fix the caller…`. Single newline inside a blockquote
+    renders as a soft wrap in most previews (including Cursor) — need
+    a blank blockquote line (rendered as `>\n`) to force a real
+    paragraph break."""
+    return _OLD_NEW_RE.sub(r"\n\n\1", text)
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -530,13 +536,18 @@ def write_markdown(
     md.append("")
 
     # Header metadata.
-    if meta:
+    if meta or file_diffs:
         md.append("| Field | Value |")
         md.append("| --- | --- |")
         for k in ("command", "repo", "parent", "child", "base"):
             v = meta.get(k)
             if v:
                 md.append(f"| **{k}** | `{v}` |")
+        if file_diffs:
+            files_cell = "<br>".join(
+                _file_link(p, None, meta) for p in sorted(file_diffs)
+            )
+            md.append(f"| **changed files** ({len(file_diffs)}) | {files_cell} |")
         md.append("")
 
     groups = _group_evidence(weak, findings)
