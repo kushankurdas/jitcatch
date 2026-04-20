@@ -8,14 +8,17 @@ from typing import Dict, List, Optional, Sequence, Tuple  # noqa: F401
 from . import adapters, context, diff as gitdiff, report, revs
 from .adapters import Adapter
 from .assessor import apply_rules, judge_candidate, score_candidate
-from .config import CatchCandidate, GeneratedTest
+from .config import CatchCandidate, GeneratedTest, ReviewFinding
 from .llm import AnthropicClient, LLMClient, StubClient
 from .runner import WorktreeSandbox, evaluate_test
 from .workflows import (
+    find_gaps,
+    run_agentic_reviewer,
     run_dodgy_diff,
     run_dodgy_diff_bundle,
     run_intent_aware,
     run_intent_aware_bundle,
+    run_retry_round,
 )
 
 
@@ -92,7 +95,41 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
         default=None,
         help="model for judging weak catches (reasoning-heavy). Defaults to --model.",
     )
+    p.add_argument(
+        "--model-review",
+        default=None,
+        help="model for agentic diff review (reasoning-heavy). Defaults to --model.",
+    )
     p.add_argument("--no-judge", action="store_true", help="skip LLM-as-judge")
+    p.add_argument(
+        "--no-review",
+        action="store_true",
+        help="skip agentic reviewer pass (BugBot-style diff reasoning). "
+             "By default the reviewer runs alongside test-gen and surfaces "
+             "bugs that produce no failing test (mocks, env-coupled paths).",
+    )
+    p.add_argument(
+        "--no-retry",
+        action="store_true",
+        help="skip feedback-driven retry loop for risks that no weak catch covered.",
+    )
+    p.add_argument(
+        "--max-retries",
+        type=int,
+        default=2,
+        help="max retry rounds for uncaught risks (default: 2).",
+    )
+    p.add_argument(
+        "--max-retry-risks",
+        type=int,
+        default=8,
+        help="cap on risks targeted per retry round (default: 8). Bounds LLM cost.",
+    )
+    p.add_argument(
+        "--skip-validator",
+        action="store_true",
+        help="skip validator pass on reviewer findings (keep every flag).",
+    )
     p.add_argument("--timeout", type=int, default=60, help="per-test timeout (s)")
     p.add_argument(
         "--filename",
@@ -130,6 +167,7 @@ def _make_llm(args: argparse.Namespace, repo: Path) -> LLMClient:
         "risks": args.model_risks or args.model,
         "tests": args.model_tests or args.model,
         "judge": args.model_judge or args.model,
+        "review": getattr(args, "model_review", None) or args.model,
     }
     return AnthropicClient(
         model=args.model,
@@ -180,6 +218,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             parent_source = parent_source + "\n\n" + caller_block
 
     all_tests: list[tuple[str, list[str], GeneratedTest, list[str]]] = []
+    risks: list[str] = []
     if args.workflow in ("intent", "both"):
         risks, intent_tests = run_intent_aware(llm, parent_source, diff_text, adapter.lang, hints)
         for t in intent_tests:
@@ -191,6 +230,19 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     meta = _build_meta(args, repo, parent_rev, child_rev)
     file_diffs = {args.file: diff_text}
+    # Single-file "bundle" for reviewer + retry — same shape as bundle
+    # workflow, just with one file.
+    review_bundle = context.build_bundle(
+        [(args.file, parent_source, diff_text)], [], max_bytes=context.MAX_BYTES_DEFAULT
+    )
+    group_contexts = {
+        0: {
+            "bundle": review_bundle,
+            "hints": hints,
+            "lang": adapter.lang,
+            "risks": risks,
+        }
+    }
     return _evaluate_and_report(
         args=args,
         repo=repo,
@@ -198,6 +250,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         child_rev=child_rev,
         adapter_by_group={0: adapter},
         groups=[(0, all_tests, parent_source, diff_text)],
+        group_contexts=group_contexts,
         llm=llm,
         meta=meta,
         file_diffs=file_diffs,
@@ -279,6 +332,7 @@ def _cmd_bundle_inner(args: argparse.Namespace, repo: Path, pair: revs.RevPair) 
     # `groups` = list of (group_key, [(workflow, risks, test, target_files), ...], combined_parent_for_judge, combined_diff_for_judge).
     adapter_by_group: Dict[int, Adapter] = {}
     groups: List[Tuple[int, list, str, str]] = []
+    group_contexts: Dict[int, dict] = {}
     file_diffs: Dict[str, str] = {}
     for gkey, (adapter, files) in enumerate(adapter_files.items()):
         selected = context.select_files(files, churn, max_files=args.max_files)
@@ -310,10 +364,11 @@ def _cmd_bundle_inner(args: argparse.Namespace, repo: Path, pair: revs.RevPair) 
         hints = adapter.prompt_hints(selected[0] if selected else "", repo_root=repo)
 
         group_tests: list = []
+        group_risks: list = []
         if args.workflow in ("intent", "both"):
-            risks, intent_tests = run_intent_aware_bundle(llm, bundle, adapter.lang, hints)
+            group_risks, intent_tests = run_intent_aware_bundle(llm, bundle, adapter.lang, hints)
             for t in intent_tests:
-                group_tests.append(("intent_aware", risks, t, list(selected)))
+                group_tests.append(("intent_aware", group_risks, t, list(selected)))
         if args.workflow in ("dodgy", "both"):
             dodgy_tests = run_dodgy_diff_bundle(llm, bundle, adapter.lang, hints)
             for t in dodgy_tests:
@@ -326,6 +381,13 @@ def _cmd_bundle_inner(args: argparse.Namespace, repo: Path, pair: revs.RevPair) 
             "\n\n".join(combined_parent_parts),
             "\n\n".join(combined_diff_parts),
         ))
+        group_contexts[gkey] = {
+            "bundle": bundle,
+            "hints": hints,
+            "lang": adapter.lang,
+            "risks": list(group_risks),
+            "selected": list(selected),
+        }
 
     return _evaluate_and_report(
         args=args,
@@ -334,18 +396,23 @@ def _cmd_bundle_inner(args: argparse.Namespace, repo: Path, pair: revs.RevPair) 
         child_rev=child_rev,
         adapter_by_group=adapter_by_group,
         groups=groups,
+        group_contexts=group_contexts,
         llm=llm,
         meta=meta,
         file_diffs=file_diffs,
     )
 
 
-def _emit_empty_report(args: argparse.Namespace, meta: Dict[str, str]) -> None:
+def _emit_empty_report(
+    args: argparse.Namespace,
+    meta: Dict[str, str],
+    findings: Optional[List[ReviewFinding]] = None,
+) -> None:
     repo = Path(meta.get("repo") or args.repo).resolve()
     json_path, md_path = _resolve_output_paths(args, repo)
-    report.write_json([], json_path)
-    report.write_markdown([], md_path, meta=meta, file_diffs={})
-    print(report.render_text([]))
+    report.write_json([], json_path, findings=findings or [])
+    report.write_markdown([], md_path, meta=meta, file_diffs={}, findings=findings or [])
+    print(report.render_text([], findings=findings or []))
 
 
 def _resolve_output_paths(args: argparse.Namespace, repo: Path) -> Tuple[Path, Path]:
@@ -385,6 +452,41 @@ def _render_callers(repo: Path, rev: str, callers: Sequence[str]) -> str:
     return "\n\n".join(parts)
 
 
+def _eval_one_test(
+    adapter: Adapter,
+    sb: WorktreeSandbox,
+    test: GeneratedTest,
+    workflow: str,
+    risks: list,
+    target_files: list,
+    parent_source_for_judge: str,
+    diff_for_judge: str,
+    llm: LLMClient,
+    args: argparse.Namespace,
+) -> Optional[CatchCandidate]:
+    try:
+        parent_res, child_res, _ = evaluate_test(adapter, sb, test, timeout=args.timeout)
+    except Exception as e:  # noqa: BLE001
+        print(f"eval error for {test.name}: {e}", file=sys.stderr)
+        return None
+    cand = CatchCandidate(
+        workflow=workflow,
+        test=test,
+        risks=list(risks),
+        parent_result=parent_res,
+        child_result=child_res,
+        target_files=list(target_files),
+    )
+    cand.rule_flags = apply_rules(cand)
+    if cand.is_weak_catch and not args.no_judge:
+        try:
+            judge_candidate(llm, cand, parent_source_for_judge, diff_for_judge, adapter.lang)
+        except Exception as e:  # noqa: BLE001
+            print(f"judge error for {test.name}: {e}", file=sys.stderr)
+    cand.final_score = score_candidate(cand)
+    return cand
+
+
 def _evaluate_and_report(
     args: argparse.Namespace,
     repo: Path,
@@ -395,46 +497,121 @@ def _evaluate_and_report(
     llm: LLMClient,
     meta: Optional[Dict[str, str]] = None,
     file_diffs: Optional[Dict[str, str]] = None,
+    group_contexts: Optional[Dict[int, dict]] = None,
 ) -> int:
     meta = meta or {}
     file_diffs = file_diffs or {}
+    group_contexts = group_contexts or {}
     total_tests = sum(len(g[1]) for g in groups)
-    if total_tests == 0:
+
+    candidates: List[CatchCandidate] = []
+    # Per-group lists to drive retry-loop gap detection independently per
+    # language group — a gap in the JS group shouldn't trigger a retry
+    # against Python context.
+    group_cands: Dict[int, List[CatchCandidate]] = {g[0]: [] for g in groups}
+
+    run_review = not getattr(args, "no_review", False)
+    run_retry = not getattr(args, "no_retry", False)
+    max_retries = int(getattr(args, "max_retries", 2) or 0)
+    skip_validator = bool(getattr(args, "skip_validator", False))
+    max_retry_risks = int(getattr(args, "max_retry_risks", 8) or 8)
+
+    findings: List[ReviewFinding] = []
+
+    # Short-circuit: if no tests AND reviewer disabled, nothing to do.
+    if total_tests == 0 and not run_review:
         print("no tests generated", file=sys.stderr)
         _emit_empty_report(args, meta)
         return 0
 
-    candidates: List[CatchCandidate] = []
-    with WorktreeSandbox(repo, parent_rev, child_rev) as sb:
-        for gkey, group_tests, parent_source_for_judge, diff_for_judge in groups:
-            adapter = adapter_by_group[gkey]
-            for workflow, risks, test, target_files in group_tests:
-                try:
-                    parent_res, child_res, _ = evaluate_test(adapter, sb, test, timeout=args.timeout)
-                except Exception as e:  # noqa: BLE001
-                    print(f"eval error for {test.name}: {e}", file=sys.stderr)
-                    continue
-                cand = CatchCandidate(
-                    workflow=workflow,
-                    test=test,
-                    risks=list(risks),
-                    parent_result=parent_res,
-                    child_result=child_res,
-                    target_files=list(target_files),
+    # Agentic reviewer — runs independently of test-gen. Happens before the
+    # sandbox is created so we can short-circuit when test-gen was empty.
+    if run_review:
+        for gkey, _tests, _parent, _diff in groups:
+            ctx = group_contexts.get(gkey) or {}
+            bundle = ctx.get("bundle", "")
+            lang = ctx.get("lang") or adapter_by_group[gkey].lang
+            if not bundle:
+                continue
+            try:
+                group_findings = run_agentic_reviewer(
+                    llm, bundle=bundle, lang=lang, skip_validator=skip_validator
                 )
-                cand.rule_flags = apply_rules(cand)
-                if cand.is_weak_catch and not args.no_judge:
-                    try:
-                        judge_candidate(llm, cand, parent_source_for_judge, diff_for_judge, adapter.lang)
-                    except Exception as e:  # noqa: BLE001
-                        print(f"judge error for {test.name}: {e}", file=sys.stderr)
-                cand.final_score = score_candidate(cand)
-                candidates.append(cand)
+            except Exception as e:  # noqa: BLE001
+                print(f"reviewer error (group {gkey}): {e}", file=sys.stderr)
+                group_findings = []
+            findings.extend(group_findings)
+
+    if total_tests == 0 and not findings:
+        print("no tests generated", file=sys.stderr)
+        _emit_empty_report(args, meta)
+        return 0
+
+    if total_tests > 0:
+        with WorktreeSandbox(repo, parent_rev, child_rev) as sb:
+            for gkey, group_tests, parent_source_for_judge, diff_for_judge in groups:
+                adapter = adapter_by_group[gkey]
+                for workflow, risks, test, target_files in group_tests:
+                    cand = _eval_one_test(
+                        adapter, sb, test, workflow, risks, target_files,
+                        parent_source_for_judge, diff_for_judge, llm, args,
+                    )
+                    if cand is not None:
+                        candidates.append(cand)
+                        group_cands[gkey].append(cand)
+
+            # Feedback-driven retry rounds. For each group, find risks with
+            # no weak catch and ask the LLM for another test with failure
+            # feedback. Cap by max_retries and max_retry_risks to bound cost.
+            if run_retry and max_retries > 0:
+                for round_idx in range(max_retries):
+                    added_any = False
+                    for gkey, group_tests, parent_source_for_judge, diff_for_judge in groups:
+                        ctx = group_contexts.get(gkey) or {}
+                        risks_all = ctx.get("risks") or []
+                        if not risks_all:
+                            continue
+                        gaps = find_gaps(risks_all, group_cands[gkey])
+                        if not gaps:
+                            continue
+                        bundle = ctx.get("bundle", "")
+                        hints = ctx.get("hints", "")
+                        adapter = adapter_by_group[gkey]
+                        selected = ctx.get("selected") or []
+                        try:
+                            new_tests = run_retry_round(
+                                llm,
+                                bundle=bundle,
+                                lang=adapter.lang,
+                                hints=hints,
+                                gaps=gaps,
+                                max_gaps=max_retry_risks,
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            print(f"retry error (group {gkey}, round {round_idx}): {e}", file=sys.stderr)
+                            new_tests = []
+                        for risk_text, t in new_tests:
+                            cand = _eval_one_test(
+                                adapter, sb, t,
+                                f"retry_r{round_idx+1}",
+                                [risk_text],
+                                selected or [],
+                                parent_source_for_judge, diff_for_judge,
+                                llm, args,
+                            )
+                            if cand is not None:
+                                candidates.append(cand)
+                                group_cands[gkey].append(cand)
+                                added_any = True
+                    if not added_any:
+                        break
 
     json_path, md_path = _resolve_output_paths(args, repo)
-    report.write_json(candidates, json_path)
-    report.write_markdown(candidates, md_path, meta=meta, file_diffs=file_diffs)
-    print(report.render_text(candidates))
+    report.write_json(candidates, json_path, findings=findings)
+    report.write_markdown(
+        candidates, md_path, meta=meta, file_diffs=file_diffs, findings=findings
+    )
+    print(report.render_text(candidates, findings=findings))
     print(f"\nJSON report: {json_path}")
     print(f"Markdown:    {md_path}")
     # LLM call stats — surfaces truncation fast.

@@ -137,6 +137,35 @@ class SmokeTest(unittest.TestCase):
             env=env,
         )
 
+    def test_reviewer_findings_surface_in_report(self) -> None:
+        """End-to-end: agentic reviewer emits a finding via stub, report
+        files contain it even when test-gen doesn't produce a weak
+        catch. Exercises the BugBot-parity channel introduced for
+        regressions tests can't exercise (mocks, env-coupled paths)."""
+        repo = self.tmp / "rev"
+        stub = dict(PY_STUB)
+        stub["review_findings"] = [
+            {
+                "file": "calc.py",
+                "line": 2,
+                "title": "add: + flipped to -",
+                "rationale": "Operator changed from + to - in add(); diff at line 2.",
+                "severity": "High",
+                "category": "arithmetic",
+                "confidence": 0.95,
+            }
+        ]
+        make_repo(repo, "calc.py", PY_PARENT_CALC, PY_CHILD_CALC, stub)
+        proc = self._run_cli(repo, "calc.py", "rev_report")
+        self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
+        json_path = repo / ".jitcatch" / "output" / "rev_report.json"
+        data = json.loads(json_path.read_text())
+        self.assertEqual(data["summary"]["review_findings"], 1)
+        self.assertEqual(data["review_findings"][0]["title"], "add: + flipped to -")
+        md_body = (repo / ".jitcatch" / "output" / "rev_report.md").read_text()
+        self.assertIn("## Findings", md_body)
+        self.assertIn("add: + flipped to -", md_body)
+
     def test_python_fixture_detects_bug(self) -> None:
         repo = self.tmp / "py"
         make_repo(repo, "calc.py", PY_PARENT_CALC, PY_CHILD_CALC, PY_STUB)

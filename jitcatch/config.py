@@ -5,6 +5,24 @@ from typing import List, Optional
 
 
 @dataclass
+class ReviewFinding:
+    """Agentic-reviewer output: a suspected bug in a diff surfaced by LLM
+    reasoning without a failing test. Parallel channel to CatchCandidate —
+    used when the change is obviously wrong but test-gen can't exercise
+    the regression (mocks, env vars, untested symbols)."""
+    file: str
+    line: Optional[int]
+    title: str
+    rationale: str
+    severity: str = "Medium"   # Critical / High / Medium / Low
+    category: str = ""         # security / concurrency / validation / arithmetic / contract
+    confidence: float = 0.0    # 0..1 from reviewer; validator may adjust
+    validator_verdict: str = ""  # "keep" | "drop" | "downgrade"
+    validator_note: str = ""
+    raw: str = ""
+
+
+@dataclass
 class TestResult:
     status: str  # "pass" | "fail" | "error"
     exit_code: int

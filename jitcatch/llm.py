@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
-from .config import GeneratedTest
+from .config import GeneratedTest, ReviewFinding
 
 
 STRICT_JSON_SUFFIX = (
@@ -161,6 +161,83 @@ RETRY_SUFFIX = (
 )
 
 
+REVIEWER_SYSTEM = (
+    "You are an aggressive PR reviewer. Your job is to find EVERY plausibly-"
+    "buggy change in the diff — even ones without a failing test. Err on the "
+    "side of flagging. Downstream validation will drop false positives.\n\n"
+    "Examine every hunk across these classes — do not skip any:\n"
+    "  - security: auth/authz guards weakened or removed, CORS misconfig, "
+    "secrets leaked, env-var defaults flipped (dev->prod), loosened HTTP "
+    "status checks (==200 -> >=200), catch blocks that silently next()/return "
+    "instead of rejecting, apiKey/tenantId guards removed.\n"
+    "  - concurrency: race conditions, ordering of await/cleanup, resource-"
+    "lifecycle violations (delete-before-close, end-after-unref).\n"
+    "  - validation: relaxed numeric caps (size/count/timeout bumped), weaker "
+    "regex (e.g. `1[0-2]` -> `1[0-3]` accepts month 13), bypassed input "
+    "checks, removed null guards.\n"
+    "  - arithmetic: off-by-one in <,<=,>=; sign / direction flips; operand "
+    "swaps inverting overdue-vs-remaining; counting-loop bounds flipped "
+    "(<3 -> <=3 double-counts boundary).\n"
+    "  - contract: changed return shape, HTTP method swaps (DELETE -> GET), "
+    "enum value swaps (open/closed), identifier/casing swaps desyncing call "
+    "sites, trailing-token bugs (slice off-by-one in query builders).\n\n"
+    "For EACH finding return an object:\n"
+    '  {"file": str, "line": int|null, "title": str (<=80 chars), '
+    '"rationale": str (WHY this is a bug, reference old vs new token),'
+    ' "severity": "Critical"|"High"|"Medium"|"Low", '
+    '"category": one of the classes above, "confidence": float 0..1}.\n'
+    "Rules:\n"
+    "  - One finding per independent mutation. Do not split one mutation "
+    "across call sites.\n"
+    "  - Title MUST name the symbol and the change ("
+    "'isInvalidDate regex accepts month 13', not 'regex changed').\n"
+    "  - Rationale must cite the specific old->new token (e.g. '1[0-2] -> 1[0-3]').\n"
+    "  - Include findings even if you're unsure — mark confidence <= 0.5.\n"
+    "Return strict JSON: {\"findings\": [...]}."
+    + STRICT_JSON_SUFFIX
+)
+
+
+VALIDATOR_SYSTEM = (
+    "You are a strict PR-review validator. Given a batch of reviewer findings "
+    "and the same diff, decide which to keep. Drop only if CLEARLY a false "
+    "positive (finding references code not in the diff, misreads old vs new, "
+    "describes a non-bug such as a formatting change, or claims a guard was "
+    "removed when it wasn't). When uncertain, keep.\n\n"
+    "For each input finding return an object with the SAME index ordering:\n"
+    '  {"index": int (0-based), "verdict": "keep"|"drop"|"downgrade", '
+    '"severity": "Critical"|"High"|"Medium"|"Low" (only if downgrade), '
+    '"note": str (<= 160 chars)}.\n'
+    "Return strict JSON: {\"validations\": [...]}."
+    + STRICT_JSON_SUFFIX
+)
+
+
+TESTS_SYSTEM_RETRY = (
+    "You are a test-generation engine given a SECOND chance. Prior tests for "
+    "this risk either passed on BOTH parent and child (didn't detect the "
+    "mutation) or failed on parent (test was buggy). You now receive:\n"
+    "  - the original risk (with file:line and class)\n"
+    "  - the FAILED-TO-CATCH test's name and code\n"
+    "  - the failure mode (both_passed | both_failed | parent_failed)\n"
+    "  - the parent source and diff.\n\n"
+    "Write ONE NEW test that avoids the prior failure. Key tactics:\n"
+    "  - both_passed: your prior test stubbed something or bypassed the "
+    "changed branch. Call the actual changed function with an input at the "
+    "mutation boundary (e.g. regex 1[0-2]->1[0-3]: pass month 13, not month "
+    "5). Import the real module.\n"
+    "  - parent_failed: test relied on an API/export the parent doesn't have "
+    "— pick assertions on symbols the parent actually exposes.\n"
+    "  - both_failed: the failure was an import or setup error. Fix "
+    "scaffolding (mock transitive deps, not the module under test).\n"
+    "Return strict JSON: "
+    "{\"tests\":[{\"name\":str,\"code\":str,\"rationale\":str,\"target_files\":[str,...]}]}. "
+    "Emit 1-2 tests max."
+    + REAL_SOURCE_CLAUSE
+    + STRICT_JSON_SUFFIX
+)
+
+
 MODEL_MAX_OUTPUT_TOKENS = {
     "claude-opus-4-7": 32000,
     "claude-opus-4-6": 32000,
@@ -231,6 +308,33 @@ class LLMClient(ABC):
             risks=risks,
             mode=mode,
         )
+
+    def review_diff(self, bundle: str, lang: str) -> List[ReviewFinding]:
+        """Agentic review: flag every suspicious change in the diff without
+        running tests. Default implementation returns empty; concrete
+        clients override."""
+        return []
+
+    def validate_findings(
+        self,
+        findings: List[ReviewFinding],
+        bundle: str,
+        lang: str,
+    ) -> List[ReviewFinding]:
+        """Second-pass filter on reviewer output. Default keeps all."""
+        return findings
+
+    def retry_tests(
+        self,
+        bundle: str,
+        lang: str,
+        hints: str,
+        gap: dict,
+    ) -> List[GeneratedTest]:
+        """Regenerate a test after the first attempt failed to catch the
+        mutation. `gap` carries prior_test, failure_mode, risk. Default
+        returns empty; concrete clients override."""
+        return []
 
 
 class AnthropicClient(LLMClient):
@@ -447,6 +551,104 @@ class AnthropicClient(LLMClient):
             self._debug_dump(f"tests.bundle.{mode}.empty", out + "\n---retry---\n" + out2)
         return tests
 
+    def review_diff(self, bundle: str, lang: str) -> List[ReviewFinding]:
+        user = f"Language: {lang}\n\n--- BUNDLE ---\n{bundle}"
+        out, _ = self._complete(REVIEWER_SYSTEM, user, label="review")
+        findings = _parse_findings(out)
+        if not findings:
+            out2, _ = self._complete(REVIEWER_SYSTEM, user + RETRY_SUFFIX, label="review.retry")
+            findings = _parse_findings(out2)
+            if not findings:
+                self._debug_dump("review.empty", out + "\n---retry---\n" + out2)
+        return findings
+
+    def validate_findings(
+        self,
+        findings: List[ReviewFinding],
+        bundle: str,
+        lang: str,
+    ) -> List[ReviewFinding]:
+        if not findings:
+            return findings
+        batch = [
+            {
+                "index": i,
+                "file": f.file,
+                "line": f.line,
+                "title": f.title,
+                "rationale": f.rationale,
+                "severity": f.severity,
+                "category": f.category,
+                "confidence": f.confidence,
+            }
+            for i, f in enumerate(findings)
+        ]
+        user = (
+            f"Language: {lang}\n\n"
+            f"--- BUNDLE ---\n{bundle}\n\n"
+            f"--- FINDINGS ---\n{json.dumps(batch, indent=2)}"
+        )
+        out, _ = self._complete(VALIDATOR_SYSTEM, user, label="review.validate")
+        verdicts = _parse_validations(out)
+        if not verdicts:
+            # Keep all on unparseable — aligns with BugBot's "err on flagging".
+            for f in findings:
+                f.validator_verdict = "keep"
+                f.validator_note = "validator output unparseable — kept by default"
+            return findings
+        by_idx = {v["index"]: v for v in verdicts if isinstance(v.get("index"), int)}
+        kept: List[ReviewFinding] = []
+        for i, f in enumerate(findings):
+            v = by_idx.get(i)
+            if not v:
+                f.validator_verdict = "keep"
+                f.validator_note = "no validator verdict — kept by default"
+                kept.append(f)
+                continue
+            verdict = str(v.get("verdict", "keep")).lower()
+            note = str(v.get("note", ""))[:160]
+            if verdict == "drop":
+                f.validator_verdict = "drop"
+                f.validator_note = note
+                continue
+            if verdict == "downgrade":
+                new_sev = str(v.get("severity", f.severity))
+                f.severity = new_sev
+                f.validator_verdict = "downgrade"
+                f.validator_note = note
+            else:
+                f.validator_verdict = "keep"
+                f.validator_note = note
+            kept.append(f)
+        return kept
+
+    def retry_tests(
+        self,
+        bundle: str,
+        lang: str,
+        hints: str,
+        gap: dict,
+    ) -> List[GeneratedTest]:
+        user = (
+            f"Language: {lang}\n\n"
+            f"--- FRAMEWORK HINTS ---\n{hints}\n\n"
+            f"--- BUNDLE ---\n{bundle}\n\n"
+            f"--- UNCAUGHT RISK ---\n{gap.get('risk', '')}\n\n"
+            f"--- FAILURE MODE ---\n{gap.get('failure_mode', 'unknown')}\n\n"
+            f"--- PRIOR TEST NAME ---\n{gap.get('prior_test_name', '')}\n\n"
+            f"--- PRIOR TEST CODE ---\n{gap.get('prior_test_code', '')}\n\n"
+            f"--- PRIOR FAILURE OUTPUT ---\n{gap.get('failure_output', '')[:2000]}"
+        )
+        out, _ = self._complete(TESTS_SYSTEM_RETRY, user, label="tests.retry")
+        tests = _parse_tests(out)
+        if tests:
+            return tests
+        out2, _ = self._complete(TESTS_SYSTEM_RETRY, user + RETRY_SUFFIX, label="tests.retry.retry")
+        tests = _parse_tests(out2)
+        if not tests:
+            self._debug_dump("tests.retry.empty", out + "\n---retry---\n" + out2)
+        return tests
+
     def judge(
         self,
         test_code: str,
@@ -550,6 +752,29 @@ class StubClient(LLMClient):
             "rationale": d.get("rationale", "stub"),
             "raw": json.dumps(d) if d else "",
         }
+
+    def review_diff(self, bundle: str, lang: str) -> List[ReviewFinding]:
+        raw = self._data.get("review_findings", []) or []
+        out: List[ReviewFinding] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            out.append(
+                ReviewFinding(
+                    file=str(entry.get("file") or ""),
+                    line=entry.get("line"),
+                    title=str(entry.get("title") or ""),
+                    rationale=str(entry.get("rationale") or ""),
+                    severity=str(entry.get("severity") or "Medium"),
+                    category=str(entry.get("category") or ""),
+                    confidence=float(entry.get("confidence", 0.8)),
+                )
+            )
+        return out
+
+    def retry_tests(self, bundle, lang, hints, gap) -> List[GeneratedTest]:
+        raw = self._data.get("retry_tests", []) or []
+        return _materialize_tests(raw)
 
 
 def _materialize_tests(raw: list) -> List[GeneratedTest]:
@@ -773,6 +998,89 @@ def _parse_tests(text: str) -> List[GeneratedTest]:
             )
         )
     return out
+
+
+def _parse_findings(text: str) -> List[ReviewFinding]:
+    """Parse reviewer output to ReviewFinding list. Accepts either a raw
+    array or {findings: [...]}. Tolerates code fences."""
+    data: Any = None
+    try:
+        data = json.loads(text.strip())
+    except (json.JSONDecodeError, ValueError):
+        data = None
+    if data is None:
+        fenced = _strip_code_fence(text)
+        if fenced and fenced != text.strip():
+            try:
+                data = json.loads(fenced)
+            except (json.JSONDecodeError, ValueError):
+                data = None
+    if data is None:
+        extracted = _extract_first_json_object(text)
+        if extracted:
+            try:
+                data = json.loads(extracted)
+            except (json.JSONDecodeError, ValueError):
+                data = None
+    if data is None:
+        return []
+    arr = data.get("findings") if isinstance(data, dict) else data
+    if not isinstance(arr, list):
+        return []
+    out: List[ReviewFinding] = []
+    for entry in arr:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").strip()
+        rationale = str(entry.get("rationale") or "").strip()
+        if not title and not rationale:
+            continue
+        line_raw = entry.get("line")
+        try:
+            line = int(line_raw) if line_raw is not None else None
+        except (TypeError, ValueError):
+            line = None
+        confidence_raw = entry.get("confidence", 0.0)
+        try:
+            conf = float(confidence_raw)
+        except (TypeError, ValueError):
+            conf = 0.0
+        out.append(
+            ReviewFinding(
+                file=str(entry.get("file") or ""),
+                line=line,
+                title=title or rationale[:80],
+                rationale=rationale or title,
+                severity=str(entry.get("severity") or "Medium"),
+                category=str(entry.get("category") or ""),
+                confidence=max(0.0, min(1.0, conf)),
+                raw=json.dumps(entry, sort_keys=True),
+            )
+        )
+    return out
+
+
+def _parse_validations(text: str) -> List[dict]:
+    data: Any = None
+    for cand in (text.strip(), _strip_code_fence(text)):
+        try:
+            data = json.loads(cand)
+            break
+        except (json.JSONDecodeError, ValueError):
+            data = None
+    if data is None:
+        extracted = _extract_first_json_object(text)
+        if extracted:
+            try:
+                data = json.loads(extracted)
+            except (json.JSONDecodeError, ValueError):
+                data = None
+    if data is None:
+        return []
+    arr = data.get("validations") if isinstance(data, dict) else data
+    if not isinstance(arr, list):
+        return []
+    return [v for v in arr if isinstance(v, dict)]
 
 
 def _parse_judge(text: str) -> dict:
