@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple  # noqa: F401
@@ -9,7 +10,14 @@ from . import adapters, context, diff as gitdiff, report, revs
 from .adapters import Adapter
 from .assessor import apply_rules, judge_candidate, score_candidate
 from .config import CatchCandidate, GeneratedTest, ReviewFinding
-from .llm import AnthropicClient, LLMClient, StubClient
+from .llm import (
+    AnthropicClient,
+    LLMClient,
+    OLLAMA_DEFAULT_BASE_URL,
+    OLLAMA_DEFAULT_MODEL,
+    OpenAICompatClient,
+    StubClient,
+)
 from .runner import WorktreeSandbox, evaluate_test
 from .workflows import (
     find_gaps,
@@ -35,7 +43,12 @@ def main(argv: List[str] | None = None) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="jitcatch", description="Just-in-Time Catching test gen (MVP)")
+    p = argparse.ArgumentParser(
+        prog="jitcatch",
+        description="JitCatch — free, local-first regression-catcher. "
+                    "Generates unit tests from a diff and runs them against "
+                    "the parent and child revs in isolated git worktrees.",
+    )
     sub = p.add_subparsers(dest="command")
 
     # run (per-file, backward compat)
@@ -76,9 +89,28 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--stub", action="store_true", help="use StubClient (no API calls)")
     p.add_argument(
+        "--provider",
+        choices=["auto", "anthropic", "ollama", "openai-compat"],
+        default="auto",
+        help="LLM provider. 'auto' picks 'anthropic' when ANTHROPIC_API_KEY "
+             "is set, else 'ollama' (http://localhost:11434/v1). "
+             "'openai-compat' accepts any chat-completions endpoint (LM Studio, "
+             "vLLM, LocalAI, Groq, OpenRouter, Together, Fireworks, ...) — "
+             "pair with --base-url.",
+    )
+    p.add_argument(
+        "--base-url",
+        default=None,
+        help="base URL for openai-compat / ollama provider. "
+             "Defaults: ollama=http://localhost:11434/v1 (overridable via "
+             "$OLLAMA_BASE_URL). Required when --provider=openai-compat.",
+    )
+    p.add_argument(
         "--model",
-        default="claude-sonnet-4-6",
-        help="default model for any stage without a stage-specific override.",
+        default=None,
+        help="default model for any stage without a stage-specific override. "
+             "Provider-aware defaults: anthropic=claude-sonnet-4-6, "
+             "ollama/openai-compat=qwen2.5-coder:7b.",
     )
     p.add_argument(
         "--model-risks",
@@ -132,6 +164,13 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--timeout", type=int, default=60, help="per-test timeout (s)")
     p.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=120.0,
+        help="HTTP read timeout per LLM call for ollama/openai-compat (s). "
+             "Raise for slow local models (14b+) or long prompts. Default 120.",
+    )
+    p.add_argument(
         "--filename",
         default=None,
         help="report base name (no extension). Writes "
@@ -155,6 +194,17 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _resolve_provider(requested: str) -> str:
+    """Resolve --provider=auto to a concrete provider based on env. Keeps
+    the historical Claude path for users with ANTHROPIC_API_KEY set, and
+    falls back to local Ollama so the tool works with zero config."""
+    if requested != "auto":
+        return requested
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    return "ollama"
+
+
 def _make_llm(args: argparse.Namespace, repo: Path) -> LLMClient:
     if args.stub:
         return StubClient(repo)
@@ -163,19 +213,52 @@ def _make_llm(args: argparse.Namespace, repo: Path) -> LLMClient:
         log_dir = Path(args.log_dir)
     elif args.verbose:
         log_dir = repo / ".jitcatch" / "logs"
-    stage_models = {
-        "risks": args.model_risks or args.model,
-        "tests": args.model_tests or args.model,
-        "judge": args.model_judge or args.model,
-        "review": getattr(args, "model_review", None) or args.model,
-    }
-    return AnthropicClient(
-        model=args.model,
-        max_tokens=args.max_tokens,
-        verbose=args.verbose,
-        log_dir=log_dir,
-        stage_models=stage_models,
+
+    provider = _resolve_provider(getattr(args, "provider", "auto"))
+    # Provider-aware default model. Explicit --model always wins.
+    default_model = (
+        "claude-sonnet-4-6" if provider == "anthropic" else OLLAMA_DEFAULT_MODEL
     )
+    model = args.model or default_model
+    stage_models = {
+        "risks": args.model_risks or model,
+        "tests": args.model_tests or model,
+        "judge": args.model_judge or model,
+        "review": getattr(args, "model_review", None) or model,
+    }
+
+    if provider == "anthropic":
+        return AnthropicClient(
+            model=model,
+            max_tokens=args.max_tokens,
+            verbose=args.verbose,
+            log_dir=log_dir,
+            stage_models=stage_models,
+        )
+
+    if provider in ("ollama", "openai-compat"):
+        base_url = args.base_url
+        if not base_url:
+            if provider == "ollama":
+                base_url = os.environ.get("OLLAMA_BASE_URL", OLLAMA_DEFAULT_BASE_URL)
+            else:
+                raise RuntimeError(
+                    "--base-url required for --provider=openai-compat "
+                    "(or use --provider=ollama for localhost:11434)"
+                )
+        api_key = os.environ.get("OPENAI_API_KEY")
+        return OpenAICompatClient(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            max_tokens=args.max_tokens,
+            verbose=args.verbose,
+            log_dir=log_dir,
+            stage_models=stage_models,
+            timeout=args.llm_timeout,
+        )
+
+    raise RuntimeError(f"unknown provider: {provider!r}")
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -295,7 +378,7 @@ def cmd_bundle(args: argparse.Namespace) -> int:
 def _cmd_bundle_inner(args: argparse.Namespace, repo: Path, pair: revs.RevPair) -> int:
     parent_rev = pair.parent
     child_rev = pair.child
-    print(f"[jitcatch] {args.command}: {pair.description}  (parent={parent_rev[:8]} child={child_rev[:8]})", file=sys.stderr)
+    print(f"[JitCatch] {args.command}: {pair.description}  (parent={parent_rev[:8]} child={child_rev[:8]})", file=sys.stderr)
 
     try:
         all_changed = gitdiff.changed_files(repo, parent_rev, child_rev)

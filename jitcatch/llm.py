@@ -244,8 +244,26 @@ MODEL_MAX_OUTPUT_TOKENS = {
     "claude-sonnet-4-6": 64000,
     "claude-sonnet-4-5": 64000,
     "claude-haiku-4-5": 64000,
+    # Common Ollama / local-served tags. Conservative output caps — 7B-class
+    # models trip their context budget fast. Override with --max-tokens.
+    "qwen2.5-coder:7b": 4096,
+    "qwen2.5-coder:14b": 8192,
+    "qwen2.5-coder:32b": 8192,
+    "llama3.1:8b": 4096,
+    "llama3.1:70b": 8192,
+    "llama3.2:3b": 2048,
+    "deepseek-coder-v2:16b": 8192,
+    "deepseek-r1:7b": 4096,
+    "deepseek-r1:14b": 8192,
+    "gpt-oss:20b": 8192,
 }
 DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 32000
+# Smaller fallback for OpenAI-compat endpoints (Ollama, LM Studio, vLLM, ...)
+# where unknown model tags almost always point at local 7B-14B models with
+# modest output budgets rather than frontier-sized context.
+OPENAI_COMPAT_DEFAULT_CAP = 4096
+OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+OLLAMA_DEFAULT_MODEL = "qwen2.5-coder:7b"
 
 
 def _clamp_max_tokens(model: str, requested: int) -> Tuple[int, bool]:
@@ -352,7 +370,11 @@ class AnthropicClient(LLMClient):
             raise RuntimeError("anthropic SDK not installed; `pip install anthropic`") from e
         key = os.environ.get("ANTHROPIC_API_KEY")
         if not key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set")
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY not set. Export it in your shell "
+                "(`export ANTHROPIC_API_KEY=sk-ant-...`), or switch "
+                "providers with --provider ollama / --provider openai-compat."
+            )
         self._client = anthropic.Anthropic(api_key=key)
         self._model = model
         # stage_models maps stage prefix ("risks"/"tests"/"judge") to model id.
@@ -391,7 +413,7 @@ class AnthropicClient(LLMClient):
         cap, clamped = _clamp_max_tokens(model, requested)
         if clamped and self._verbose:
             print(
-                f"[jitcatch] call={seq} label={label} clamped max_tokens "
+                f"[JitCatch] call={seq} label={label} clamped max_tokens "
                 f"{requested} -> {cap} (model {model} ceiling)",
                 file=sys.stderr,
             )
@@ -437,14 +459,14 @@ class AnthropicClient(LLMClient):
 
         if self._verbose:
             print(
-                f"[jitcatch] call={seq} label={label} model={model} "
+                f"[JitCatch] call={seq} label={label} model={model} "
                 f"stop_reason={stop_reason} in={in_tok} out={out_tok} "
                 f"cap={cap} log={log_path or '-'}",
                 file=sys.stderr,
             )
             if stop_reason == "max_tokens":
                 print(
-                    f"[jitcatch] WARNING: call {seq} hit max_tokens cap "
+                    f"[JitCatch] WARNING: call {seq} hit max_tokens cap "
                     f"({cap}). Raise --max-tokens or shrink the bundle.",
                     file=sys.stderr,
                 )
@@ -465,10 +487,10 @@ class AnthropicClient(LLMClient):
             p = self._log_dir / f"{ts}_dbg_{safe}.log"
             p.write_text(payload)
             if self._verbose:
-                print(f"[jitcatch] debug {label} -> {p}", file=sys.stderr)
+                print(f"[JitCatch] debug {label} -> {p}", file=sys.stderr)
             return
         if self._verbose:
-            print(f"[jitcatch][{label}] {payload}", file=sys.stderr)
+            print(f"[JitCatch][{label}] {payload}", file=sys.stderr)
 
     def infer_risks(self, diff: str, parent_source: str, lang: str) -> List[str]:
         user = f"Language: {lang}\n\n--- DIFF ---\n{diff}\n\n--- PARENT SOURCE ---\n{parent_source}"
@@ -683,6 +705,144 @@ class AnthropicClient(LLMClient):
             return parsed
         parsed["raw"] = out
         return parsed
+
+
+class OpenAICompatClient(AnthropicClient):
+    """OpenAI-compatible chat-completions client for Ollama, LM Studio,
+    vLLM, LocalAI, Groq, OpenRouter, Together, Fireworks, etc. Reuses
+    AnthropicClient's higher-level methods (infer_risks, generate_tests,
+    judge, review_diff, validate_findings, retry_tests) — only the
+    transport in `_complete` differs. Subclassing AnthropicClient is a
+    Phase-1 pragmatic shortcut to avoid duplicating ~150 lines; Phase 2
+    will extract a shared base."""
+
+    def __init__(
+        self,
+        model: str,
+        base_url: str = OLLAMA_DEFAULT_BASE_URL,
+        api_key: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        verbose: bool = False,
+        log_dir: Optional[Path] = None,
+        stage_models: Optional[dict] = None,
+        timeout: float = 120.0,
+    ) -> None:
+        # Skip super().__init__: that path imports the anthropic SDK and
+        # requires ANTHROPIC_API_KEY. Set shared state directly.
+        import httpx
+        self._http = httpx.Client(timeout=timeout)
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._timeout = timeout
+        self._model = model
+        self._stage_models = dict(stage_models or {})
+        self._max_tokens = max_tokens
+        self._verbose = verbose
+        self._log_dir = Path(log_dir) if log_dir else None
+        if self._log_dir:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._call_seq = 0
+        self.total_calls = 0
+        self.truncated_calls = 0
+
+    def _complete(
+        self,
+        system: str,
+        user: str,
+        label: str,
+        max_tokens: Optional[int] = None,
+    ) -> Tuple[str, "CallMeta"]:
+        self._call_seq += 1
+        self.total_calls += 1
+        seq = self._call_seq
+        model = self._model_for(label)
+        ceiling = MODEL_MAX_OUTPUT_TOKENS.get(model, OPENAI_COMPAT_DEFAULT_CAP)
+        requested = max_tokens or self._max_tokens or ceiling
+        cap = min(requested, ceiling)
+        clamped = requested > ceiling
+        if clamped and self._verbose:
+            print(
+                f"[JitCatch] call={seq} label={label} clamped max_tokens "
+                f"{requested} -> {cap} (model {model} ceiling)",
+                file=sys.stderr,
+            )
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": cap,
+            "temperature": 0,
+            "stream": False,
+        }
+        url = f"{self._base_url}/chat/completions"
+        try:
+            resp = self._http.post(url, json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                f"OpenAI-compat call failed at {url}: {type(e).__name__}: {e}"
+            ) from e
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError(f"OpenAI-compat response had no choices: {data!r}")
+        message = choices[0].get("message") or {}
+        text = str(message.get("content") or "")
+        finish_reason = str(choices[0].get("finish_reason") or "")
+        # Normalize OpenAI's "length" -> Anthropic's "max_tokens" so the
+        # rest of the pipeline's truncation-aware logic works unchanged.
+        stop_reason = "max_tokens" if finish_reason == "length" else finish_reason
+        usage = data.get("usage") or {}
+        in_tok = int(usage.get("prompt_tokens") or 0)
+        out_tok = int(usage.get("completion_tokens") or 0)
+        if stop_reason == "max_tokens":
+            self.truncated_calls += 1
+
+        log_path: Optional[Path] = None
+        if self._log_dir:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
+            log_path = self._log_dir / f"{ts}_{seq:03d}_{safe}.log"
+            log_path.write_text(
+                f"# label: {label}\n"
+                f"# seq: {seq}\n"
+                f"# model: {model}\n"
+                f"# endpoint: {url}\n"
+                f"# max_tokens_cap: {cap}\n"
+                f"# stop_reason: {stop_reason}\n"
+                f"# input_tokens: {in_tok}\n"
+                f"# output_tokens: {out_tok}\n"
+                f"\n===== SYSTEM =====\n{system}\n"
+                f"\n===== USER =====\n{user}\n"
+                f"\n===== RESPONSE =====\n{text}\n"
+            )
+
+        if self._verbose:
+            print(
+                f"[JitCatch] call={seq} label={label} model={model} "
+                f"stop_reason={stop_reason} in={in_tok} out={out_tok} "
+                f"cap={cap} log={log_path or '-'}",
+                file=sys.stderr,
+            )
+            if stop_reason == "max_tokens":
+                print(
+                    f"[JitCatch] WARNING: call {seq} hit max_tokens cap "
+                    f"({cap}). Raise --max-tokens or shrink the bundle.",
+                    file=sys.stderr,
+                )
+
+        return text, CallMeta(
+            label=label,
+            stop_reason=stop_reason,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            log_path=log_path,
+        )
 
 
 class StubClient(LLMClient):

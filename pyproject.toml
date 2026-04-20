@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jitcatch"
 version = "0.1.0"
-description = "Just-in-Time Catching Test Generation (MVP inspired by Meta FSE 2026 paper)"
+description = "JitCatch — free, local-first regression-catcher. Dual-worktree runner generates and executes tests against a diff. Implements ideas from Meta's Just-in-Time Catching Test Generation (FSE 2026)."
 requires-python = ">=3.9"
 dependencies = [
     "anthropic>=0.40.0",
