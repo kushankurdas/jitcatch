@@ -322,8 +322,11 @@ class ReportSortingTest(unittest.TestCase):
             body = out.read_text()
             self.assertIn("Likely false positives (1)", body)
             fp_section_start = body.index("Likely false positives")
-            self.assertLess(body.index("real bug"), fp_section_start)
-            self.assertGreater(body.index("flaky test"), fp_section_start)
+            # Titles also appear in the Overview table at the top — assert on
+            # the per-finding heading (`### N. <title>`) so we're checking
+            # which section the group renders in, not where it's indexed.
+            self.assertLess(body.index("### 1. real bug"), fp_section_start)
+            self.assertGreater(body.index("### 2. flaky test"), fp_section_start)
 
 
 class AnnotateFindingsTest(unittest.TestCase):

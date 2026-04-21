@@ -569,19 +569,15 @@ def _is_likely_fp(g: Dict) -> bool:
     return _group_severity(g) in _FP_SEVERITIES
 
 
-def _render_group(
+def _group_metadata(
     g: Dict,
-    i: int,
-    md: List[str],
-    meta: Dict[str, str],
-    file_diffs: Dict[str, str],
-) -> None:
+) -> Tuple[str, str, Optional[int], str, str, float, str]:
+    """Resolve per-group display fields once so overview table and
+    per-finding render agree: (title, loc_path, line, sev, cat, conf, sid).
+    sid is empty when no failing test backs the group."""
     f = g["finding"]
     tests = g["tests"]
     title = f.title if f else tests[0].test.name
-    md.append(f"### {i}. {title}")
-    md.append("")
-
     if f:
         loc_path = f.file or (
             tests[0].target_files[0] if tests and tests[0].target_files else ""
@@ -598,6 +594,25 @@ def _render_group(
         sev = _severity_from_score(c.final_score)
         cat = cls or "-"
         conf = c.judge_tp_prob
+    sid = stable_id(tests[0]) if tests else ""
+    return title, loc_path, line, sev, cat, conf, sid
+
+
+def _render_group(
+    g: Dict,
+    i: int,
+    md: List[str],
+    meta: Dict[str, str],
+    file_diffs: Dict[str, str],
+) -> None:
+    f = g["finding"]
+    tests = g["tests"]
+    title, loc_path, line, sev, cat, conf, sid = _group_metadata(g)
+    # Explicit HTML anchor — most MD renderers honor it; heading-slug
+    # anchors break on punctuation ("1." becomes unreliable).
+    md.append(f'<a id="finding-{i}"></a>')
+    md.append(f"### {i}. {title}")
+    md.append("")
 
     loc_md = _file_link(loc_path, line, meta) if loc_path else "`(no file)`"
     loc_line = (
@@ -606,8 +621,8 @@ def _render_group(
         f"**Category:** `{cat}` &nbsp;•&nbsp; "
         f"**Confidence:** `{conf:.2f}`"
     )
-    if tests:
-        loc_line += f" &nbsp;•&nbsp; **ID:** `{stable_id(tests[0])}`"
+    if sid:
+        loc_line += f" &nbsp;•&nbsp; **ID:** `{sid}`"
     md.append(loc_line)
     md.append("")
 
@@ -664,6 +679,66 @@ def _render_group(
             md.append("")
         md.append("</details>")
         md.append("")
+
+
+def _overview_md(
+    entries: List[Tuple[int, Dict]], meta: Dict[str, str]
+) -> List[str]:
+    """High-level table over every finding. Each row links to the
+    per-finding anchor rendered further down — useful for long reports."""
+    if not entries:
+        return []
+    out = [
+        "## Overview",
+        "",
+        "| # | Title | Location | Severity | Category | Conf. | ID |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for i, g in entries:
+        title, loc_path, line, sev, cat, conf, sid = _group_metadata(g)
+        loc = _file_link(loc_path, line, meta) if loc_path else "`(no file)`"
+        # Pipe breaks the table — escape any pipes inside the title.
+        safe_title = (title or "").replace("|", "\\|")
+        sid_cell = f"`{sid}`" if sid else "-"
+        out.append(
+            f"| [{i}](#finding-{i}) | [{safe_title}](#finding-{i}) | {loc} | "
+            f"{_severity_md(sev)} | `{cat}` | `{conf:.2f}` | {sid_cell} |"
+        )
+    out.append("")
+    return out
+
+
+def _overview_html(
+    entries: List[Tuple[int, Dict]], meta: Dict[str, str]
+) -> List[str]:
+    if not entries:
+        return []
+    out = [
+        "<h2>Overview</h2>",
+        '<table class="overview">',
+        "<thead><tr><th>#</th><th>Title</th><th>Location</th>"
+        "<th>Severity</th><th>Category</th><th>Conf.</th><th>ID</th></tr></thead>",
+        "<tbody>",
+    ]
+    for i, g in entries:
+        title, loc_path, line, sev, cat, conf, sid = _group_metadata(g)
+        loc_html = (
+            _html_file_link(loc_path, line, meta)
+            if loc_path
+            else "<code>(no file)</code>"
+        )
+        sid_cell = f"<code>{_html_escape(sid)}</code>" if sid else "-"
+        out.append(
+            f'<tr><td><a href="#finding-{i}">{i}</a></td>'
+            f'<td><a href="#finding-{i}">{_html_escape(title)}</a></td>'
+            f"<td>{loc_html}</td>"
+            f'<td><span class="badge {_html_escape(sev)}">{_html_escape(sev)}</span></td>'
+            f"<td><code>{_html_escape(cat)}</code></td>"
+            f"<td><code>{conf:.2f}</code></td>"
+            f"<td>{sid_cell}</td></tr>"
+        )
+    out.append("</tbody></table>")
+    return out
 
 
 def _usage_stage_parts(usage) -> List[str]:
@@ -734,18 +809,17 @@ def write_markdown(
             md.append(f"| **changed files** ({len(file_diffs)}) | {files_cell} |")
         md.append("")
 
-    usage_md = _usage_md_lines(usage)
-    if usage_md:
-        md.append("## LLM usage")
-        md.append("")
-        md.extend(usage_md)
-
     groups = _group_evidence(weak, findings)
     groups.sort(key=_group_sort_key)
 
     if not groups:
         md.append("_No bugs surfaced — no failing tests and no review findings._")
         md.append("")
+        usage_md = _usage_md_lines(usage)
+        if usage_md:
+            md.append("## LLM usage")
+            md.append("")
+            md.extend(usage_md)
         out_path.write_text("\n".join(md))
         return
 
@@ -755,6 +829,14 @@ def write_markdown(
     n_test_only = sum(1 for g in groups if not g["finding"])
     n_review_only = sum(1 for g in groups if g["finding"] and not g["tests"])
     n_both = sum(1 for g in groups if g["finding"] and g["tests"])
+
+    entries: List[Tuple[int, Dict]] = []
+    for i, g in enumerate(main_groups, 1):
+        entries.append((i, g))
+    start = len(main_groups) + 1
+    for offset, g in enumerate(fp_groups):
+        entries.append((start + offset, g))
+    md.extend(_overview_md(entries, meta))
 
     md.append("## Findings")
     md.append("")
@@ -787,11 +869,16 @@ def write_markdown(
             " — low score, skim only</summary>"
         )
         md.append("")
-        start = len(main_groups) + 1
-        for offset, g in enumerate(fp_groups):
-            _render_group(g, start + offset, md, meta, file_diffs)
+        for i, g in entries[len(main_groups):]:
+            _render_group(g, i, md, meta, file_diffs)
         md.append("</details>")
         md.append("")
+
+    usage_md = _usage_md_lines(usage)
+    if usage_md:
+        md.append("## LLM usage")
+        md.append("")
+        md.extend(usage_md)
 
     out_path.write_text("\n".join(md))
 
@@ -843,6 +930,12 @@ summary{cursor:pointer;font-weight:600;padding:6px 0}
 .fp summary{color:#8b949e}
 .count{color:#8b949e;font-weight:400;font-size:13px}
 .empty{font-style:italic;color:#8b949e}
+.overview{border-collapse:collapse;width:100%;margin:12px 0 24px;font-size:13px}
+.overview th,.overview td{border:1px solid #d0d7de;padding:6px 10px;text-align:left;vertical-align:top}
+.overview th{background:#f6f8fa;font-weight:600}
+.overview tbody tr:hover td{background:#f6f8fa}
+.overview td a{font-weight:600}
+.group{scroll-margin-top:12px}
 """
 
 
@@ -897,26 +990,9 @@ def _render_group_html(
 ) -> None:
     f = g["finding"]
     tests = g["tests"]
-    title = f.title if f else tests[0].test.name
+    title, loc_path, line, sev, cat, conf, sid = _group_metadata(g)
 
-    if f:
-        loc_path = f.file or (
-            tests[0].target_files[0] if tests and tests[0].target_files else ""
-        )
-        line = f.line
-        sev = f.severity or "Medium"
-        cat = f.category or "-"
-        conf = f.confidence
-    else:
-        c = tests[0]
-        rf, rl, cls, _body = _risk_meta_for(c)
-        loc_path = rf or (c.target_files[0] if c.target_files else "")
-        line = rl
-        sev = _severity_from_score(c.final_score)
-        cat = cls or "-"
-        conf = c.judge_tp_prob
-
-    html.append('<div class="group">')
+    html.append(f'<div class="group" id="finding-{i}">')
     html.append(f"<h3>{i}. {_html_escape(title)}</h3>")
     html.append('<div class="loc">')
     html.append(f'<strong>Location:</strong> {_html_file_link(loc_path, line, meta)}')
@@ -926,8 +1002,7 @@ def _render_group_html(
     html.append(f'<strong>Category:</strong> <code>{_html_escape(cat)}</code>')
     html.append('<span class="sep">•</span>')
     html.append(f'<strong>Confidence:</strong> <code>{conf:.2f}</code>')
-    if tests:
-        sid = stable_id(tests[0])
+    if sid:
         html.append('<span class="sep">•</span>')
         html.append(f'<strong>ID:</strong> <code>{_html_escape(sid)}</code>')
     html.append('</div>')
@@ -1044,11 +1119,6 @@ def write_html(
             )
         html.append("</div>")
 
-    usage_html = _usage_html_block(usage)
-    if usage_html:
-        html.append("<h2>LLM usage</h2>")
-        html.extend(usage_html)
-
     groups = _group_evidence(weak, findings)
     groups.sort(key=_group_sort_key)
 
@@ -1056,6 +1126,10 @@ def write_html(
         html.append(
             '<p class="empty">No bugs surfaced — no failing tests and no review findings.</p>'
         )
+        usage_html = _usage_html_block(usage)
+        if usage_html:
+            html.append("<h2>LLM usage</h2>")
+            html.extend(usage_html)
         html.append("</body></html>")
         out_path.write_text("\n".join(html))
         return
@@ -1066,6 +1140,14 @@ def write_html(
     n_test_only = sum(1 for g in groups if not g["finding"])
     n_review_only = sum(1 for g in groups if g["finding"] and not g["tests"])
     n_both = sum(1 for g in groups if g["finding"] and g["tests"])
+
+    entries: List[Tuple[int, Dict]] = []
+    for i, g in enumerate(main_groups, 1):
+        entries.append((i, g))
+    start = len(main_groups) + 1
+    for offset, g in enumerate(fp_groups):
+        entries.append((start + offset, g))
+    html.extend(_overview_html(entries, meta))
 
     html.append("<h2>Findings</h2>")
     summary = (
@@ -1097,10 +1179,14 @@ def write_html(
             f"<summary><strong>Likely false positives ({len(fp_groups)})</strong>"
             " — low score, skim only</summary>"
         )
-        start = len(main_groups) + 1
-        for offset, g in enumerate(fp_groups):
-            _render_group_html(g, start + offset, html, meta, file_diffs)
+        for i, g in entries[len(main_groups):]:
+            _render_group_html(g, i, html, meta, file_diffs)
         html.append("</details>")
+
+    usage_html = _usage_html_block(usage)
+    if usage_html:
+        html.append("<h2>LLM usage</h2>")
+        html.extend(usage_html)
 
     html.append("</body></html>")
     out_path.write_text("\n".join(html))
