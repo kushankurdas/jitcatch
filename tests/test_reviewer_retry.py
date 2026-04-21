@@ -263,6 +263,69 @@ class ReportWithFindingsTest(unittest.TestCase):
             self.assertNotIn("## Findings", out.read_text())
 
 
+class ReportSortingTest(unittest.TestCase):
+    def test_json_candidates_sorted_weak_first_then_score_desc(self):
+        import tempfile
+        low = _make_cand("t_low", "r", parent_pass=True, child_pass=False)
+        low.final_score = -0.4
+        high = _make_cand("t_high", "r", parent_pass=True, child_pass=False)
+        high.final_score = 0.9
+        mid = _make_cand("t_mid", "r", parent_pass=True, child_pass=False)
+        mid.final_score = 0.3
+        noise = _make_cand("t_noise", "r", parent_pass=True, child_pass=True)
+        noise.final_score = 0.5
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "r.json"
+            report.write_json([low, noise, mid, high], out)
+            data = json.loads(out.read_text())
+            names = [c["test"]["name"] for c in data["candidates"]]
+            self.assertEqual(names, ["t_high", "t_mid", "t_low", "t_noise"])
+
+    def test_markdown_test_backed_outranks_critical_review_only(self):
+        import tempfile
+        test_backed = _make_cand(
+            "low severity test catch", "r",
+            parent_pass=True, child_pass=False,
+        )
+        test_backed.final_score = 0.3
+        review_only = ReviewFinding(
+            file="b.js", line=1, title="CRITICAL opinion",
+            rationale="no test backs this", severity="Critical",
+            category="security", confidence=0.99, validator_verdict="keep",
+        )
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "r.md"
+            report.write_markdown(
+                [test_backed], out,
+                meta={"repo": d}, file_diffs={}, findings=[review_only],
+            )
+            body = out.read_text()
+            idx_test = body.index("low severity test catch")
+            idx_crit = body.index("CRITICAL opinion")
+            self.assertLess(
+                idx_test, idx_crit,
+                "test-backed group must render before review-only, "
+                "regardless of review-only severity",
+            )
+
+    def test_markdown_low_score_catch_lands_in_fp_section(self):
+        import tempfile
+        fp = _make_cand("flaky test", "r", parent_pass=True, child_pass=False)
+        fp.final_score = -0.5   # → severity=Info
+        real = _make_cand("real bug", "r", parent_pass=True, child_pass=False)
+        real.final_score = 0.85  # → severity=High
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "r.md"
+            report.write_markdown(
+                [fp, real], out, meta={"repo": d}, file_diffs={}, findings=[],
+            )
+            body = out.read_text()
+            self.assertIn("Likely false positives (1)", body)
+            fp_section_start = body.index("Likely false positives")
+            self.assertLess(body.index("real bug"), fp_section_start)
+            self.assertGreater(body.index("flaky test"), fp_section_start)
+
+
 class AnnotateFindingsTest(unittest.TestCase):
     def test_tags_findings_already_caught_by_test(self):
         cand = _make_cand(

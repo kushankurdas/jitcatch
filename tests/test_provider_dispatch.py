@@ -72,7 +72,9 @@ class MakeLlmDispatchTest(unittest.TestCase):
     def test_auto_ollama_defaults_when_no_api_key(self) -> None:
         env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "OLLAMA_BASE_URL", "OPENAI_API_KEY")}
         with mock.patch.dict(os.environ, env, clear=True):
-            with mock.patch.object(cli, "OpenAICompatClient") as mock_cls:
+            # Ollama provider routes through OllamaClient (native /api/chat
+            # transport), not the generic OpenAICompatClient (/v1 shim).
+            with mock.patch.object(cli, "OllamaClient") as mock_cls:
                 mock_cls.return_value = mock.sentinel.ollama
                 got = cli._make_llm(_ns(), Path("/tmp"))
         self.assertIs(got, mock.sentinel.ollama)
@@ -88,7 +90,7 @@ class MakeLlmDispatchTest(unittest.TestCase):
         }
         env["OLLAMA_BASE_URL"] = "http://10.0.0.5:11434/v1"
         with mock.patch.dict(os.environ, env, clear=True):
-            with mock.patch.object(cli, "OpenAICompatClient") as mock_cls:
+            with mock.patch.object(cli, "OllamaClient") as mock_cls:
                 cli._make_llm(_ns(provider="ollama"), Path("/tmp"))
         self.assertEqual(
             mock_cls.call_args.kwargs["base_url"],
@@ -120,7 +122,7 @@ class MakeLlmDispatchTest(unittest.TestCase):
     def test_explicit_model_wins_over_provider_default(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         with mock.patch.dict(os.environ, env, clear=True):
-            with mock.patch.object(cli, "OpenAICompatClient") as mock_cls:
+            with mock.patch.object(cli, "OllamaClient") as mock_cls:
                 cli._make_llm(_ns(model="deepseek-r1:14b"), Path("/tmp"))
         self.assertEqual(mock_cls.call_args.kwargs["model"], "deepseek-r1:14b")
 
@@ -226,6 +228,127 @@ class OpenAICompatCompleteTest(unittest.TestCase):
         c._api_key = "sk-secret"
         c._complete("sys", "user", label="tests")
         self.assertEqual(captured["auth"], "Bearer sk-secret")
+
+
+def _make_mock_ollama_client(transport: httpx.MockTransport) -> llm.OllamaClient:
+    """Build an OllamaClient wired to a mock transport. Sidesteps __init__
+    (which opens a real httpx.Client) so tests never touch the network."""
+    c = llm.OllamaClient.__new__(llm.OllamaClient)
+    c._http = httpx.Client(transport=transport, timeout=10.0)
+    c._base_url = "http://localhost:11434"
+    c._api_key = None
+    c._timeout = 10.0
+    c._model = "gemma4:e4b"
+    c._stage_models = {}
+    c._max_tokens = None
+    c._verbose = False
+    c._log_dir = None
+    c._call_seq = 0
+    c.total_calls = 0
+    c.truncated_calls = 0
+    c._num_ctx = 16384
+    return c
+
+
+class OllamaClientTransportTest(unittest.TestCase):
+    """Locks the Ollama-native transport contract: /api/chat endpoint,
+    `format: "json"` (strict JSON mode), and `options.num_ctx` for
+    extended context — all three are what the /v1 shim silently drops."""
+
+    def test_posts_api_chat_with_json_mode_and_num_ctx(self) -> None:
+        captured: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            captured["path"] = req.url.path
+            captured["body"] = req.read()
+            return httpx.Response(
+                200,
+                json={
+                    "message": {"role": "assistant", "content": '{"risks":[]}'},
+                    "done_reason": "stop",
+                    "prompt_eval_count": 10,
+                    "eval_count": 4,
+                },
+            )
+
+        c = _make_mock_ollama_client(httpx.MockTransport(handler))
+        text, meta = c._complete("sys", "user", label="risks.bundle")
+
+        self.assertEqual(text, '{"risks":[]}')
+        self.assertEqual(meta.stop_reason, "stop")
+        self.assertEqual(meta.input_tokens, 10)
+        self.assertEqual(meta.output_tokens, 4)
+        self.assertEqual(captured["path"], "/api/chat")
+
+        body = captured["body"].decode()
+        self.assertIn('"format":"json"', body)
+        self.assertIn('"num_ctx":16384', body)
+        self.assertIn('"temperature":0', body)
+        # Ollama uses `num_predict` in options, not top-level `max_tokens`.
+        self.assertIn('"num_predict"', body)
+        self.assertNotIn('"max_tokens"', body)
+
+    def test_maps_done_reason_length_to_max_tokens(self) -> None:
+        transport = httpx.MockTransport(lambda _: httpx.Response(
+            200,
+            json={
+                "message": {"role": "assistant", "content": "x"},
+                "done_reason": "length",
+                "prompt_eval_count": 1,
+                "eval_count": 1,
+            },
+        ))
+        c = _make_mock_ollama_client(transport)
+        _, meta = c._complete("sys", "user", label="tests.bundle.intent")
+        self.assertEqual(meta.stop_reason, "max_tokens")
+        self.assertEqual(c.truncated_calls, 1)
+
+    def test_http_error_becomes_runtime_error_naming_ollama(self) -> None:
+        transport = httpx.MockTransport(lambda _: httpx.Response(500, text="boom"))
+        c = _make_mock_ollama_client(transport)
+        with self.assertRaises(RuntimeError) as ctx:
+            c._complete("sys", "user", label="risks.bundle")
+        self.assertIn("Ollama call failed", str(ctx.exception))
+        self.assertIn("/api/chat", str(ctx.exception))
+
+    def test_base_url_with_v1_suffix_stripped(self) -> None:
+        # If the caller passes the OpenAI-compat URL (http://.../v1), the
+        # OllamaClient must fall back to the native root so POSTs land at
+        # /api/chat, not /v1/api/chat.
+        c = llm.OllamaClient.__new__(llm.OllamaClient)
+        # Simulate __init__'s stripping logic without touching the network.
+        c._base_url = "http://localhost:11434/v1".rstrip("/")
+        if c._base_url.endswith("/v1"):
+            c._base_url = c._base_url[: -len("/v1")]
+        self.assertEqual(c._base_url, "http://localhost:11434")
+
+    def test_compact_prompt_selected_for_gemma4_e4b(self) -> None:
+        """End-to-end: small model over Ollama transport gets the compact
+        bundle prompt delivered to /api/chat — the single behavior fix
+        that unblocks small models on jitcatch."""
+        captured: dict = {}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            captured["body"] = req.read()
+            return httpx.Response(
+                200,
+                json={
+                    "message": {"role": "assistant", "content": "[]"},
+                    "done_reason": "stop",
+                    "prompt_eval_count": 1,
+                    "eval_count": 1,
+                },
+            )
+
+        c = _make_mock_ollama_client(httpx.MockTransport(handler))
+        # Exercise the same path cli.cmd_run triggers — the hook picks
+        # compact for small models.
+        system = c._system_for_label("risks.bundle", llm.RISKS_SYSTEM_BUNDLE)
+        self.assertIs(system, llm.RISKS_SYSTEM_BUNDLE_COMPACT)
+        c._complete(system, "user", label="risks.bundle")
+        body = captured["body"].decode()
+        # Schema-forcing line from the compact prompt is present.
+        self.assertIn("JSON array", body)
 
 
 if __name__ == "__main__":

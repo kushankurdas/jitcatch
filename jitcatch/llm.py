@@ -238,6 +238,97 @@ TESTS_SYSTEM_RETRY = (
 )
 
 
+# Compact system prompts used by small local models (gemma4:e*, qwen2.5-coder:7b,
+# llama3.2:3b, phi4:*). The full prompts above exceed effective attention budgets
+# of <=7B class models once bundled parent sources are appended, producing prose
+# summaries instead of JSON. These preserve schema + a single JSON example and
+# drop the exposition. Large/paid models always use the full prompts via
+# _system_for_label default passthrough — see OpenAICompatClient override.
+RISKS_SYSTEM_BUNDLE_COMPACT = (
+    "Find bugs the diff could introduce. Output a JSON array. "
+    "Each item: {\"file\": str, \"line\": int|null, \"class\": "
+    "\"security\"|\"concurrency\"|\"validation\"|\"arithmetic\"|\"contract\", "
+    "\"risk\": str}. Consider: auth/cors weakened, env defaults flipped, "
+    "HTTP method swaps, off-by-one, regex bounds loosened, removed guards. "
+    "One entry per independent bug.\n"
+    "Example: [{\"file\":\"config/cors.js\",\"line\":11,\"class\":\"security\","
+    "\"risk\":\"origin:'*' with credentials:true exposes cross-origin cookies\"}]\n"
+    "Return ONLY the JSON array. No prose. No fences."
+)
+
+TESTS_SYSTEM_BUNDLE_INTENT_COMPACT = (
+    "Generate unit tests that pass on PARENT code and fail on the diffed child. "
+    "Tests MUST import the real changed module by repo-relative path — do NOT "
+    "re-implement the function under test inside the test. Mock transitive deps "
+    "(axios, jwt, db) to drive failing branches. For each input RISK emit at "
+    "least one test whose target_files includes the risk's file.\n"
+    "Return strict JSON: {\"tests\":[{\"name\":str,\"code\":str,\"rationale\":"
+    "str,\"target_files\":[str,...]}]}\n"
+    "Example: {\"tests\":[{\"name\":\"rejects_origin_star_with_creds\","
+    "\"code\":\"const cors=require('./config/cors');expect(cors.origin)"
+    ".not.toBe('*');\",\"rationale\":\"cors.js flipped to wildcard\","
+    "\"target_files\":[\"config/cors.js\"]}]}\n"
+    "Return ONLY the JSON object. No prose. No fences."
+)
+
+TESTS_SYSTEM_BUNDLE_DODGY_COMPACT = (
+    "Treat each diff as a suspected bug mutation. Generate unit tests against "
+    "the PARENT code that assert observable behavior precisely enough that the "
+    "mutated child fails. Import real modules; mock transitive deps only.\n"
+    "Return strict JSON: {\"tests\":[{\"name\":str,\"code\":str,\"rationale\":"
+    "str,\"target_files\":[str,...]}]}\n"
+    "Example: {\"tests\":[{\"name\":\"delete_endpoint_uses_DELETE\",\"code\":"
+    "\"const r=require('./routes');expect(r.stack.find(l=>l.route.path==="
+    "'/x').route.methods.delete).toBe(true);\",\"rationale\":\"routes.js "
+    "flipped DELETE -> GET\",\"target_files\":[\"routes/index.js\"]}]}\n"
+    "Return ONLY the JSON object. No prose. No fences."
+)
+
+REVIEWER_SYSTEM_COMPACT = (
+    "Aggressive PR reviewer. Flag every plausibly-buggy change. Check: security "
+    "(auth/cors/env flips), concurrency (race/ordering), validation (relaxed "
+    "limits/regex), arithmetic (off-by-one, sign), contract (method swap, enum "
+    "swap, return shape).\n"
+    "Return strict JSON: {\"findings\":[{\"file\":str,\"line\":int|null,"
+    "\"title\":str,\"rationale\":str,\"severity\":\"Critical\"|\"High\"|"
+    "\"Medium\"|\"Low\",\"category\":str,\"confidence\":float}]}\n"
+    "Rationale must cite old->new token. Title names the symbol + change. "
+    "Include low-confidence findings (confidence<=0.5).\n"
+    "Example: {\"findings\":[{\"file\":\"routes/index.js\",\"line\":49,"
+    "\"title\":\"delete-vulnerability route DELETE -> GET\",\"rationale\":"
+    "\"method changed from DELETE to GET; GET of a mutating endpoint is "
+    "CSRF-exploitable\",\"severity\":\"High\",\"category\":\"contract\","
+    "\"confidence\":0.9}]}\n"
+    "Return ONLY the JSON object. No prose. No fences."
+)
+
+
+# Models that benefit from COMPACT prompts. Matched by prefix against the model
+# tag so `gemma4:e4b-instruct-q4_K_M` still resolves. Ordered by common Ollama
+# naming. Large local models (gemma4:26b+, qwen2.5-coder:14b+) keep full prompts.
+SMALL_MODEL_PREFIXES: Tuple[str, ...] = (
+    "gemma4:e2b",
+    "gemma4:e4b",
+    "gemma3:1b",
+    "gemma3:4b",
+    "qwen2.5-coder:3b",
+    "qwen2.5-coder:7b",
+    "llama3.1:8b",
+    "llama3.2:1b",
+    "llama3.2:3b",
+    "deepseek-coder-v2:16b",  # MoE with 2.4B active — behaves like a small model
+    "deepseek-r1:1.5b",
+    "deepseek-r1:7b",
+    "phi4:mini",
+    "phi3:",
+)
+
+
+def _is_small_model(model: str) -> bool:
+    tag = (model or "").strip().lower()
+    return any(tag.startswith(p) for p in SMALL_MODEL_PREFIXES)
+
+
 MODEL_MAX_OUTPUT_TOKENS = {
     "claude-opus-4-7": 32000,
     "claude-opus-4-6": 32000,
@@ -246,6 +337,7 @@ MODEL_MAX_OUTPUT_TOKENS = {
     "claude-haiku-4-5": 64000,
     # Common Ollama / local-served tags. Conservative output caps — 7B-class
     # models trip their context budget fast. Override with --max-tokens.
+    "qwen2.5-coder:3b": 2048,
     "qwen2.5-coder:7b": 4096,
     "qwen2.5-coder:14b": 8192,
     "qwen2.5-coder:32b": 8192,
@@ -256,6 +348,12 @@ MODEL_MAX_OUTPUT_TOKENS = {
     "deepseek-r1:7b": 4096,
     "deepseek-r1:14b": 8192,
     "gpt-oss:20b": 8192,
+    # Gemma 4 (Google, 2026). E2B/E4B are edge-sized; 26B/31B target coding
+    # assistants and IDE agent workflows.
+    "gemma4:e2b": 2048,
+    "gemma4:e4b": 4096,
+    "gemma4:26b": 8192,
+    "gemma4:31b": 8192,
 }
 DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 32000
 # Smaller fallback for OpenAI-compat endpoints (Ollama, LM Studio, vLLM, ...)
@@ -264,6 +362,10 @@ DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 32000
 OPENAI_COMPAT_DEFAULT_CAP = 4096
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434/v1"
 OLLAMA_DEFAULT_MODEL = "qwen2.5-coder:7b"
+# Context window for Ollama-native transport. 4096 (Ollama default) truncates
+# both bundle source and the compact prompt's JSON example, producing silent
+# prose fallback on small models. 16K fits typical bundle + response budget.
+OLLAMA_DEFAULT_NUM_CTX = 16384
 
 
 def _clamp_max_tokens(model: str, requested: int) -> Tuple[int, bool]:
@@ -479,6 +581,14 @@ class AnthropicClient(LLMClient):
             log_path=log_path,
         )
 
+    def _system_for_label(self, label: str, default: str) -> str:
+        """Hook: map a stage label to a system prompt. Base returns the
+        default unchanged — paid Anthropic models always get the full
+        prompts. Subclasses (OpenAICompatClient) may swap to compact
+        variants when the target model cannot keep the long prompts in
+        its effective attention budget."""
+        return default
+
     def _debug_dump(self, label: str, payload: str) -> None:
         """Write full payload (no truncation) to log dir or stderr."""
         if self._log_dir:
@@ -494,10 +604,11 @@ class AnthropicClient(LLMClient):
 
     def infer_risks(self, diff: str, parent_source: str, lang: str) -> List[str]:
         user = f"Language: {lang}\n\n--- DIFF ---\n{diff}\n\n--- PARENT SOURCE ---\n{parent_source}"
-        out, _ = self._complete(RISKS_SYSTEM, user, label="risks")
+        system = self._system_for_label("risks", RISKS_SYSTEM)
+        out, _ = self._complete(system, user, label="risks")
         risks = _parse_json_array(out)
         if not risks:
-            out2, _ = self._complete(RISKS_SYSTEM, user + RETRY_SUFFIX, label="risks.retry")
+            out2, _ = self._complete(system, user + RETRY_SUFFIX, label="risks.retry")
             risks = _parse_json_array(out2)
             if not risks:
                 self._debug_dump("risks.empty", out + "\n---retry---\n" + out2)
@@ -505,10 +616,11 @@ class AnthropicClient(LLMClient):
 
     def infer_risks_bundle(self, bundle: str, lang: str) -> List[str]:
         user = f"Language: {lang}\n\n--- BUNDLE ---\n{bundle}"
-        out, _ = self._complete(RISKS_SYSTEM_BUNDLE, user, label="risks.bundle")
+        system = self._system_for_label("risks.bundle", RISKS_SYSTEM_BUNDLE)
+        out, _ = self._complete(system, user, label="risks.bundle")
         risks = _parse_json_array(out)
         if not risks:
-            out2, _ = self._complete(RISKS_SYSTEM_BUNDLE, user + RETRY_SUFFIX, label="risks.bundle.retry")
+            out2, _ = self._complete(system, user + RETRY_SUFFIX, label="risks.bundle.retry")
             risks = _parse_json_array(out2)
             if not risks:
                 self._debug_dump("risks.bundle.empty", out + "\n---retry---\n" + out2)
@@ -523,7 +635,8 @@ class AnthropicClient(LLMClient):
         risks: Optional[List[str]] = None,
         mode: str = "intent",
     ) -> List[GeneratedTest]:
-        system = TESTS_SYSTEM_INTENT if mode == "intent" else TESTS_SYSTEM_DODGY
+        default = TESTS_SYSTEM_INTENT if mode == "intent" else TESTS_SYSTEM_DODGY
+        system = self._system_for_label(f"tests.{mode}", default)
         risk_block = ""
         if risks:
             risk_block = "\n--- RISKS ---\n" + "\n".join(f"- {r}" for r in risks) + "\n"
@@ -553,7 +666,8 @@ class AnthropicClient(LLMClient):
         risks: Optional[List[str]] = None,
         mode: str = "intent",
     ) -> List[GeneratedTest]:
-        system = TESTS_SYSTEM_BUNDLE_INTENT if mode == "intent" else TESTS_SYSTEM_BUNDLE_DODGY
+        default = TESTS_SYSTEM_BUNDLE_INTENT if mode == "intent" else TESTS_SYSTEM_BUNDLE_DODGY
+        system = self._system_for_label(f"tests.bundle.{mode}", default)
         risk_block = ""
         if risks:
             risk_block = "\n--- RISKS ---\n" + "\n".join(f"- {r}" for r in risks) + "\n"
@@ -575,10 +689,11 @@ class AnthropicClient(LLMClient):
 
     def review_diff(self, bundle: str, lang: str) -> List[ReviewFinding]:
         user = f"Language: {lang}\n\n--- BUNDLE ---\n{bundle}"
-        out, _ = self._complete(REVIEWER_SYSTEM, user, label="review")
+        system = self._system_for_label("review", REVIEWER_SYSTEM)
+        out, _ = self._complete(system, user, label="review")
         findings = _parse_findings(out)
         if not findings:
-            out2, _ = self._complete(REVIEWER_SYSTEM, user + RETRY_SUFFIX, label="review.retry")
+            out2, _ = self._complete(system, user + RETRY_SUFFIX, label="review.retry")
             findings = _parse_findings(out2)
             if not findings:
                 self._debug_dump("review.empty", out + "\n---retry---\n" + out2)
@@ -610,7 +725,8 @@ class AnthropicClient(LLMClient):
             f"--- BUNDLE ---\n{bundle}\n\n"
             f"--- FINDINGS ---\n{json.dumps(batch, indent=2)}"
         )
-        out, _ = self._complete(VALIDATOR_SYSTEM, user, label="review.validate")
+        system = self._system_for_label("review.validate", VALIDATOR_SYSTEM)
+        out, _ = self._complete(system, user, label="review.validate")
         verdicts = _parse_validations(out)
         if not verdicts:
             # Keep all on unparseable — aligns with BugBot's "err on flagging".
@@ -661,11 +777,12 @@ class AnthropicClient(LLMClient):
             f"--- PRIOR TEST CODE ---\n{gap.get('prior_test_code', '')}\n\n"
             f"--- PRIOR FAILURE OUTPUT ---\n{gap.get('failure_output', '')[:2000]}"
         )
-        out, _ = self._complete(TESTS_SYSTEM_RETRY, user, label="tests.retry")
+        system = self._system_for_label("tests.retry", TESTS_SYSTEM_RETRY)
+        out, _ = self._complete(system, user, label="tests.retry")
         tests = _parse_tests(out)
         if tests:
             return tests
-        out2, _ = self._complete(TESTS_SYSTEM_RETRY, user + RETRY_SUFFIX, label="tests.retry.retry")
+        out2, _ = self._complete(system, user + RETRY_SUFFIX, label="tests.retry.retry")
         tests = _parse_tests(out2)
         if not tests:
             self._debug_dump("tests.retry.empty", out + "\n---retry---\n" + out2)
@@ -686,13 +803,14 @@ class AnthropicClient(LLMClient):
             f"--- TEST CODE ---\n{test_code}\n\n"
             f"--- FAILURE OUTPUT ---\n{failure}"
         )
-        out, _ = self._complete(JUDGE_SYSTEM, user, label="judge", max_tokens=MODEL_MAX_OUTPUT_TOKENS.get(
+        system = self._system_for_label("judge", JUDGE_SYSTEM)
+        out, _ = self._complete(system, user, label="judge", max_tokens=MODEL_MAX_OUTPUT_TOKENS.get(
                 self._model_for("judge"), DEFAULT_MODEL_MAX_OUTPUT_TOKENS
             ))
         parsed = _parse_judge(out)
         if parsed.get("_unparseable"):
             retry_out, _ = self._complete(
-                JUDGE_SYSTEM, user + RETRY_SUFFIX, label="judge.retry", max_tokens=MODEL_MAX_OUTPUT_TOKENS.get(
+                system, user + RETRY_SUFFIX, label="judge.retry", max_tokens=MODEL_MAX_OUTPUT_TOKENS.get(
                 self._model_for("judge"), DEFAULT_MODEL_MAX_OUTPUT_TOKENS
             )
             )
@@ -832,6 +950,171 @@ class OpenAICompatClient(AnthropicClient):
             if stop_reason == "max_tokens":
                 print(
                     f"[JitCatch] WARNING: call {seq} hit max_tokens cap "
+                    f"({cap}). Raise --max-tokens or shrink the bundle.",
+                    file=sys.stderr,
+                )
+
+        return text, CallMeta(
+            label=label,
+            stop_reason=stop_reason,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            log_path=log_path,
+        )
+
+    # Label -> compact system prompt map. Only bundle paths have compact
+    # variants today — single-file paths are shorter and less pressured.
+    _COMPACT_SYSTEM_BY_LABEL = {
+        "risks.bundle": RISKS_SYSTEM_BUNDLE_COMPACT,
+        "tests.bundle.intent": TESTS_SYSTEM_BUNDLE_INTENT_COMPACT,
+        "tests.bundle.dodgy": TESTS_SYSTEM_BUNDLE_DODGY_COMPACT,
+        "review": REVIEWER_SYSTEM_COMPACT,
+    }
+
+    def _system_for_label(self, label: str, default: str) -> str:
+        """Swap to compact prompt when the stage model is small. Paid/large
+        models (Anthropic, gemma4:26b+, qwen2.5-coder:14b+) stay on full
+        prompts via the default passthrough on non-small models."""
+        if not _is_small_model(self._model_for(label)):
+            return default
+        # Normalize retry labels ("risks.bundle.retry" -> "risks.bundle").
+        key = label[: -len(".retry")] if label.endswith(".retry") else label
+        return self._COMPACT_SYSTEM_BY_LABEL.get(key, default)
+
+
+class OllamaClient(OpenAICompatClient):
+    """Ollama-native transport using `/api/chat`. Unlocks features the
+    OpenAI-compat shim silently drops: `format: "json"` for strict JSON
+    output and `options.num_ctx` for extended context. Small models that
+    ignore strict-JSON instructions on the `/v1` shim produce reliable
+    JSON here because the server enforces the schema at sample time.
+
+    The base_url accepts either the Ollama native root
+    (`http://localhost:11434`) or the OpenAI-compat root
+    (`http://localhost:11434/v1`) — the trailing `/v1` is stripped."""
+
+    def __init__(
+        self,
+        model: str,
+        base_url: str = OLLAMA_DEFAULT_BASE_URL,
+        api_key: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        verbose: bool = False,
+        log_dir: Optional[Path] = None,
+        stage_models: Optional[dict] = None,
+        timeout: float = 120.0,
+        num_ctx: int = OLLAMA_DEFAULT_NUM_CTX,
+    ) -> None:
+        super().__init__(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            max_tokens=max_tokens,
+            verbose=verbose,
+            log_dir=log_dir,
+            stage_models=stage_models,
+            timeout=timeout,
+        )
+        # Strip trailing /v1 if caller passed the OpenAI-compat URL.
+        if self._base_url.endswith("/v1"):
+            self._base_url = self._base_url[: -len("/v1")]
+        self._num_ctx = num_ctx
+
+    def _complete(
+        self,
+        system: str,
+        user: str,
+        label: str,
+        max_tokens: Optional[int] = None,
+    ) -> Tuple[str, "CallMeta"]:
+        self._call_seq += 1
+        self.total_calls += 1
+        seq = self._call_seq
+        model = self._model_for(label)
+        ceiling = MODEL_MAX_OUTPUT_TOKENS.get(model, OPENAI_COMPAT_DEFAULT_CAP)
+        requested = max_tokens or self._max_tokens or ceiling
+        cap = min(requested, ceiling)
+        clamped = requested > ceiling
+        if clamped and self._verbose:
+            print(
+                f"[JitCatch] call={seq} label={label} clamped max_tokens "
+                f"{requested} -> {cap} (model {model} ceiling)",
+                file=sys.stderr,
+            )
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        # All jitcatch stages expect JSON output. `format: "json"` forces
+        # the model to emit parseable JSON at sample time — the single
+        # biggest reliability win for small models that otherwise drop to
+        # prose summaries.
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "format": "json",
+            "options": {
+                "temperature": 0,
+                "num_ctx": self._num_ctx,
+                "num_predict": cap,
+            },
+        }
+        url = f"{self._base_url}/api/chat"
+        try:
+            resp = self._http.post(url, json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                f"Ollama call failed at {url}: {type(e).__name__}: {e}"
+            ) from e
+        message = data.get("message") or {}
+        text = str(message.get("content") or "")
+        done_reason = str(data.get("done_reason") or "")
+        # Normalize to Anthropic's stop_reason vocabulary so the rest of
+        # the pipeline's truncation logic is identical to the other
+        # clients. Ollama uses "length" when num_predict was the binding
+        # constraint.
+        stop_reason = "max_tokens" if done_reason == "length" else done_reason
+        in_tok = int(data.get("prompt_eval_count") or 0)
+        out_tok = int(data.get("eval_count") or 0)
+        if stop_reason == "max_tokens":
+            self.truncated_calls += 1
+
+        log_path: Optional[Path] = None
+        if self._log_dir:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
+            log_path = self._log_dir / f"{ts}_{seq:03d}_{safe}.log"
+            log_path.write_text(
+                f"# label: {label}\n"
+                f"# seq: {seq}\n"
+                f"# model: {model}\n"
+                f"# endpoint: {url}\n"
+                f"# num_ctx: {self._num_ctx}\n"
+                f"# num_predict: {cap}\n"
+                f"# done_reason: {done_reason}\n"
+                f"# stop_reason: {stop_reason}\n"
+                f"# input_tokens: {in_tok}\n"
+                f"# output_tokens: {out_tok}\n"
+                f"\n===== SYSTEM =====\n{system}\n"
+                f"\n===== USER =====\n{user}\n"
+                f"\n===== RESPONSE =====\n{text}\n"
+            )
+
+        if self._verbose:
+            print(
+                f"[JitCatch] call={seq} label={label} model={model} "
+                f"stop_reason={stop_reason} in={in_tok} out={out_tok} "
+                f"cap={cap} ctx={self._num_ctx} log={log_path or '-'}",
+                file=sys.stderr,
+            )
+            if stop_reason == "max_tokens":
+                print(
+                    f"[JitCatch] WARNING: call {seq} hit num_predict cap "
                     f"({cap}). Raise --max-tokens or shrink the bundle.",
                     file=sys.stderr,
                 )
@@ -1062,17 +1345,27 @@ def _recover_truncated_tests_json(text: str) -> Optional[str]:
 def _format_risk_entry(obj: Any) -> Optional[str]:
     """Normalize a risk (dict or scalar) to a single display string.
     Objects become `[file:line] (class) risk` so downstream consumers
-    can regex out the metadata for report grouping."""
+    can regex out the metadata for report grouping. Tolerant of
+    small-model key variants: `{file, change}` (deepseek-coder),
+    `{file, issue}`, `{file, summary}`."""
     if isinstance(obj, (str, int, float)):
         return str(obj)
     if not isinstance(obj, dict):
         return None
-    risk = obj.get("risk") or obj.get("description") or obj.get("text")
+    risk = (
+        obj.get("risk")
+        or obj.get("description")
+        or obj.get("text")
+        or obj.get("change")
+        or obj.get("issue")
+        or obj.get("summary")
+        or obj.get("title")
+    )
     if not risk:
         return None
-    file = obj.get("file") or obj.get("path") or ""
+    file = obj.get("file") or obj.get("path") or obj.get("filename") or ""
     line = obj.get("line")
-    cls = obj.get("class") or obj.get("category") or ""
+    cls = obj.get("class") or obj.get("category") or obj.get("type") or ""
     head = ""
     if file:
         head = f"[{file}:{line}]" if line is not None else f"[{file}]"
@@ -1081,12 +1374,34 @@ def _format_risk_entry(obj: Any) -> Optional[str]:
     return f"{head} {risk}".strip() if head else str(risk)
 
 
+# Keys small models commonly pick when they ignore "risks" — all map to
+# a list of risk-shaped entries. Order matters: prefer the canonical key
+# then deepseek/gemma/etc variants. Never includes keys owned by other
+# parsers (e.g. "tests", "findings") — those have dedicated parse paths
+# and cross-parser collisions would silently reclassify outputs.
+_RISK_ARRAY_KEYS: Tuple[str, ...] = (
+    "risks",
+    "bundle_risks",
+    "changes",
+    "issues",
+    "items",
+    "results",
+    "risk_list",
+)
+
+
 def _parse_json_array(text: str) -> List[str]:
     candidates: List[str] = [text.strip(), _strip_code_fence(text)]
     # also try to find a bare [...] in the text
     m = re.search(r"\[[\s\S]*?\]", text)
     if m:
         candidates.append(m.group(0))
+    # Small models often wrap the array inside the first balanced {...}
+    # object even when asked for a bare array. Include it so the dict
+    # branch below has a chance to recognize known wrapper keys.
+    extracted = _extract_first_json_object(text)
+    if extracted:
+        candidates.append(extracted)
     for cand in candidates:
         try:
             data = json.loads(cand)
@@ -1099,13 +1414,17 @@ def _parse_json_array(text: str) -> List[str]:
                 if formatted:
                     out.append(formatted)
             return out
-        if isinstance(data, dict) and isinstance(data.get("risks"), list):
-            out = []
-            for x in data["risks"]:
-                formatted = _format_risk_entry(x)
-                if formatted:
-                    out.append(formatted)
-            return out
+        if isinstance(data, dict):
+            for key in _RISK_ARRAY_KEYS:
+                arr = data.get(key)
+                if isinstance(arr, list):
+                    out = []
+                    for x in arr:
+                        formatted = _format_risk_entry(x)
+                        if formatted:
+                            out.append(formatted)
+                    if out:
+                        return out
     return []
 
 
@@ -1143,18 +1462,38 @@ def _parse_tests(text: str) -> List[GeneratedTest]:
     if data is None:
         return []
 
-    arr = data.get("tests") if isinstance(data, dict) else data
+    arr: Any = None
+    if isinstance(data, list):
+        arr = data
+    elif isinstance(data, dict):
+        # Prefer canonical "tests", then small-model variants. Never cross
+        # into "findings" / "risks" — those collide with other parsers.
+        for key in ("tests", "unit_tests", "cases", "testcases", "results"):
+            if isinstance(data.get(key), list):
+                arr = data[key]
+                break
     if not isinstance(arr, list):
         return []
     out: List[GeneratedTest] = []
     for i, t in enumerate(arr):
-        if not isinstance(t, dict) or "code" not in t:
+        if not isinstance(t, dict):
+            continue
+        # Small models sometimes use `test_code`, `snippet`, `src`, or
+        # `source` instead of `code`. Accept whichever is present.
+        code_val = (
+            t.get("code")
+            or t.get("test_code")
+            or t.get("snippet")
+            or t.get("src")
+            or t.get("source")
+        )
+        if not code_val:
             continue
         out.append(
             GeneratedTest(
-                name=str(t.get("name", f"t_{i}")),
-                code=str(t["code"]),
-                rationale=str(t.get("rationale", "")),
+                name=str(t.get("name") or t.get("title") or f"t_{i}"),
+                code=str(code_val),
+                rationale=str(t.get("rationale") or t.get("reason") or ""),
             )
         )
     return out
@@ -1184,15 +1523,28 @@ def _parse_findings(text: str) -> List[ReviewFinding]:
                 data = None
     if data is None:
         return []
-    arr = data.get("findings") if isinstance(data, dict) else data
+    arr: Any = None
+    if isinstance(data, list):
+        arr = data
+    elif isinstance(data, dict):
+        # Small models reach for "issues" or "items" when they ignore
+        # the "findings" instruction. Both are structurally identical —
+        # accept them. Entries still need title|rationale to qualify,
+        # so stray risk-shaped arrays won't be reclassified as findings.
+        for key in ("findings", "issues", "items", "problems", "bugs"):
+            if isinstance(data.get(key), list):
+                arr = data[key]
+                break
     if not isinstance(arr, list):
         return []
     out: List[ReviewFinding] = []
     for entry in arr:
         if not isinstance(entry, dict):
             continue
-        title = str(entry.get("title") or "").strip()
-        rationale = str(entry.get("rationale") or "").strip()
+        title = str(entry.get("title") or entry.get("summary") or "").strip()
+        rationale = str(
+            entry.get("rationale") or entry.get("reason") or entry.get("description") or ""
+        ).strip()
         if not title and not rationale:
             continue
         line_raw = entry.get("line")

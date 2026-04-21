@@ -140,5 +140,148 @@ class ParseJudgeTest(unittest.TestCase):
         self.assertTrue(out.get("_unparseable"))
 
 
+class SmallModelClassifierTest(unittest.TestCase):
+    """Guards the compact-prompt selection. Large/paid models MUST NOT
+    match — that guarantees the OpenAICompatClient._system_for_label
+    override returns the default (full) prompt for them."""
+
+    def test_paid_anthropic_models_not_small(self) -> None:
+        for m in ("claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"):
+            self.assertFalse(llm._is_small_model(m), m)
+
+    def test_large_local_models_not_small(self) -> None:
+        for m in ("gemma4:26b", "gemma4:31b", "qwen2.5-coder:14b",
+                  "qwen2.5-coder:32b", "llama3.1:70b"):
+            self.assertFalse(llm._is_small_model(m), m)
+
+    def test_small_local_models_match(self) -> None:
+        for m in ("gemma4:e2b", "gemma4:e4b", "qwen2.5-coder:7b",
+                  "llama3.2:3b", "deepseek-coder-v2:16b", "phi3:mini"):
+            self.assertTrue(llm._is_small_model(m), m)
+
+    def test_quantization_suffixes_still_match(self) -> None:
+        # Ollama appends quantization tags like `-instruct-q4_K_M`. Prefix
+        # matching keeps classification stable across those variants.
+        self.assertTrue(llm._is_small_model("gemma4:e4b-instruct-q4_K_M"))
+        self.assertTrue(llm._is_small_model("qwen2.5-coder:7b-instruct"))
+
+
+class TolerantRiskParsingTest(unittest.TestCase):
+    """Small models produce non-canonical wrapper keys and field names.
+    These guards lock in the tolerant behavior so paid-model outputs
+    (which use the canonical `risks`/`risk` shape) still parse via the
+    canonical path first."""
+
+    def test_wrapper_key_changes_accepted(self) -> None:
+        raw = '{"changes":[{"file":"r.js","line":1,"class":"contract","risk":"DELETE->GET"}]}'
+        out = llm._parse_json_array(raw)
+        self.assertEqual(len(out), 1)
+        self.assertIn("DELETE->GET", out[0])
+
+    def test_wrapper_key_issues_accepted(self) -> None:
+        raw = '{"issues":[{"file":"a.js","risk":"loose regex"}]}'
+        self.assertEqual(llm._parse_json_array(raw), ["[a.js] loose regex"])
+
+    def test_field_change_aliased_to_risk(self) -> None:
+        # deepseek-coder style output: `change` key instead of `risk`.
+        raw = '[{"file":"config.js","change":"CORS origin flipped to *"}]'
+        out = llm._parse_json_array(raw)
+        self.assertEqual(out, ["[config.js] CORS origin flipped to *"])
+
+    def test_canonical_still_wins(self) -> None:
+        # Canonical `risks` key takes precedence over aliases — paid
+        # model output must hit the fast path.
+        raw = '{"risks":[{"risk":"canonical"}],"changes":[{"change":"alias"}]}'
+        out = llm._parse_json_array(raw)
+        self.assertEqual(out, ["canonical"])
+
+
+class TolerantTestParsingTest(unittest.TestCase):
+    def test_alternate_code_key(self) -> None:
+        raw = '{"tests":[{"name":"t","test_code":"expect(x).toBe(1);","rationale":"r"}]}'
+        tests = llm._parse_tests(raw)
+        self.assertEqual(len(tests), 1)
+        self.assertIn("expect(x)", tests[0].code)
+
+    def test_wrapper_key_cases(self) -> None:
+        raw = '{"cases":[{"name":"c","code":"x","rationale":"r"}]}'
+        tests = llm._parse_tests(raw)
+        self.assertEqual(len(tests), 1)
+
+    def test_name_fallback_to_title(self) -> None:
+        raw = '{"tests":[{"title":"t1","code":"x"}]}'
+        tests = llm._parse_tests(raw)
+        self.assertEqual(tests[0].name, "t1")
+
+
+class TolerantFindingsParsingTest(unittest.TestCase):
+    def test_issues_wrapper_accepted(self) -> None:
+        raw = (
+            '{"issues":[{"file":"r.js","line":49,"title":"method swap",'
+            '"rationale":"DELETE -> GET","severity":"High",'
+            '"category":"contract","confidence":0.9}]}'
+        )
+        findings = llm._parse_findings(raw)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].severity, "High")
+
+    def test_reason_alias_for_rationale(self) -> None:
+        raw = '{"findings":[{"title":"x","reason":"because"}]}'
+        findings = llm._parse_findings(raw)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].rationale, "because")
+
+
+class SystemPromptHookTest(unittest.TestCase):
+    """Verifies the _system_for_label hook's contract: paid/large models
+    always receive the default (full) prompt; small local models served
+    over OpenAI-compat receive the compact variant for bundle labels
+    and the default for labels that don't have a compact variant."""
+
+    def _mk_compat(self, model: str) -> llm.OpenAICompatClient:
+        c = llm.OpenAICompatClient.__new__(llm.OpenAICompatClient)
+        c._model = model
+        c._stage_models = {}
+        return c
+
+    def test_anthropic_always_passthrough(self) -> None:
+        # Build a bare AnthropicClient-shaped object just for the hook.
+        c = llm.AnthropicClient.__new__(llm.AnthropicClient)
+        c._model = "claude-sonnet-4-6"
+        c._stage_models = {}
+        for label, default in (
+            ("risks.bundle", llm.RISKS_SYSTEM_BUNDLE),
+            ("tests.bundle.intent", llm.TESTS_SYSTEM_BUNDLE_INTENT),
+            ("review", llm.REVIEWER_SYSTEM),
+        ):
+            self.assertIs(c._system_for_label(label, default), default)
+
+    def test_compat_large_model_passthrough(self) -> None:
+        c = self._mk_compat("qwen2.5-coder:32b")
+        self.assertIs(
+            c._system_for_label("risks.bundle", llm.RISKS_SYSTEM_BUNDLE),
+            llm.RISKS_SYSTEM_BUNDLE,
+        )
+
+    def test_compat_small_model_compact(self) -> None:
+        c = self._mk_compat("gemma4:e4b")
+        picked = c._system_for_label("risks.bundle", llm.RISKS_SYSTEM_BUNDLE)
+        self.assertIs(picked, llm.RISKS_SYSTEM_BUNDLE_COMPACT)
+
+    def test_retry_label_maps_to_same_compact(self) -> None:
+        c = self._mk_compat("gemma4:e4b")
+        picked = c._system_for_label("risks.bundle.retry", llm.RISKS_SYSTEM_BUNDLE)
+        self.assertIs(picked, llm.RISKS_SYSTEM_BUNDLE_COMPACT)
+
+    def test_compact_only_defined_for_bundle_paths(self) -> None:
+        # Non-bundle single-file path has no compact variant — falls
+        # back to the full system prompt even on small models.
+        c = self._mk_compat("gemma4:e4b")
+        self.assertIs(
+            c._system_for_label("risks", llm.RISKS_SYSTEM),
+            llm.RISKS_SYSTEM,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

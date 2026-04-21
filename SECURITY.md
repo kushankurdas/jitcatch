@@ -2,57 +2,51 @@
 
 ## Supported versions
 
-JitCatch is pre-1.0. Only the latest release on `main` receives security fixes.
+JitCatch is pre-1.0. Only the latest release on the `main` branch receives security fixes. Older versions should be upgraded rather than patched.
 
 | Version | Supported |
-|---------|-----------|
-| `main`  | ✅        |
-| `< 0.1` | ❌        |
+|---|---|
+| `main` / latest release | Yes |
+| Anything else | No |
 
 ## Reporting a vulnerability
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Report privately via GitHub's [private vulnerability reporting](https://github.com/kushankurdas/jitcatch/security/advisories/new) feature, or email the maintainer (see the `author` field in `pyproject.toml` or the commit history).
+Report privately via GitHub's [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability) on this repository, or email the maintainer at **`<TODO: maintainer email>`**.
 
-Include:
+Please include:
 
-1. A description of the issue and its impact.
-2. Steps to reproduce, ideally with a minimal repo or diff.
-3. Affected version / commit SHA.
-4. Your disclosure timeline preference.
+- A description of the vulnerability and its impact.
+- Steps to reproduce (ideally a minimal test case).
+- The commit SHA or version you tested against.
+- Your name/handle for credit (optional).
 
 ### What to expect
 
-- **Acknowledgement** within 7 days.
-- **Triage + fix plan** within 30 days for confirmed issues.
-- **Coordinated disclosure.** A CVE will be requested for high-severity issues. Credit is given in the release notes unless you ask otherwise.
+- **Acknowledgement** within 72 hours of report.
+- **Initial assessment** within 7 days.
+- **Fix or mitigation plan** communicated within 30 days for confirmed vulnerabilities. Complex issues may take longer — if so, you'll get a status update at the 30-day mark.
+- **Credit** in the release notes and/or a GitHub security advisory, unless you prefer anonymity.
 
-## Threat model
+## Scope
 
-JitCatch is a developer CLI. It runs on a developer's machine (or CI) against a repository the operator already trusts. The in-scope threats are:
+In scope:
 
-| Concern | In scope |
-|---------|----------|
-| Arbitrary code execution from a malicious diff | ✅ JitCatch clones into worktrees and runs generated tests. |
-| Arbitrary code execution from a malicious LLM response | ✅ The LLM writes test code that JitCatch executes. |
-| Credential leakage (API keys in logs / reports) | ✅ Anthropic / OpenAI-compatible keys are read from env and must never appear in `.jitcatch/output/` or `--log-dir`. |
-| Path traversal when the LLM names a test file | ✅ Adapters must sandbox writes inside the worktree. |
-| Denial of service via long-running tests | ⚠️ Mitigated by `--timeout`; not a hard sandbox. |
+- Code execution or privilege escalation triggered by running JitCatch on an attacker-controlled repository.
+- Secret leakage (API keys, credentials) from JitCatch's code or default configuration.
+- Path-traversal or sandbox-escape bugs in the worktree runner.
+- Prompt-injection vectors that cause JitCatch to exfiltrate secrets or execute unintended commands.
 
-**Out of scope:**
+Out of scope:
 
-- Running JitCatch against a repo you do not trust to execute. The tool runs code from the repo by design.
-- Supply-chain attacks against `pip install`-time dependencies — report those upstream (`anthropic`, `pytest`).
-- LLM model-quality issues (hallucinated tests, false positives). Those are bugs, not vulnerabilities.
+- Bugs in your LLM provider (Anthropic, Ollama, or any OpenAI-compatible endpoint) — report those upstream.
+- Vulnerabilities in `pytest`, `node`, or other tools JitCatch shells out to.
+- Issues that require the attacker to already have code execution on the host machine.
+- Social engineering of maintainers.
 
-## Hardening recommendations for operators
+## Threat model assumptions
 
-- Run JitCatch inside a container or VM when testing an untrusted PR.
-- Use a per-repo, short-lived API key. Rotate on suspicion.
-- Never pass `--log-dir` to a path shared across repos; transcripts may contain code snippets from the diff.
-- Review `.jitcatch/output/*.md` before sharing — generated tests can contain strings from the diff verbatim.
+JitCatch is designed to be run **locally, against repositories the user trusts**. It executes generated tests in a worktree with the same privileges as the invoking user. Running JitCatch on untrusted code is equivalent to running that untrusted code directly — the worktree sandbox is for isolation of revs, not for security containment.
 
-## Safe harbor
-
-Good-faith security research that follows this policy will not be met with legal action. We welcome coordinated disclosure.
+For CI use, run JitCatch inside a disposable container or sandboxed job with the minimum secrets and filesystem access required.

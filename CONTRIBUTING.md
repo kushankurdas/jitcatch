@@ -1,80 +1,114 @@
 # Contributing to JitCatch
 
-Thanks for helping out. JitCatch is a small, focused tool — contributions that keep it small and focused are easier to land.
+Thanks for your interest in JitCatch. This doc covers how to set up a dev environment, how to run the tests, and what a good PR looks like.
 
-## Before you open a PR
+If you're reporting a bug or suggesting a feature, use the [issue templates](.github/ISSUE_TEMPLATE) rather than sending a PR blind — it's easier to agree on the shape of a change before code is written.
 
-1. **Open an issue first for anything non-trivial.** Bug reports are always welcome; for features, a short discussion up front avoids wasted work.
-2. **Keep the change scoped.** One concern per PR. Refactors go in their own PR.
-3. **Match the existing style.** No linter is enforced yet — read the surrounding code.
+---
 
 ## Development setup
 
+Requirements: Python ≥ 3.9, `git`, and (for running the test suite end-to-end) `node` ≥ 18.
+
 ```bash
-git clone https://github.com/<your-fork>/jitcatch
+git clone https://github.com/kushankurdas/jitcatch
 cd jitcatch
-python -m venv .venv
-source .venv/bin/activate
 pip install -e '.[dev]'
+```
+
+That installs the `jitcatch` console script in editable mode plus `pytest`.
+
+### Running the test suite
+
+```bash
 pytest tests/
 ```
 
-All tests run offline — no API keys, no network. If you add a test that needs a real LLM, guard it behind an env var and mark it with `pytest.mark.skipif`.
+The suite is fully offline — it uses `StubClient` for LLM calls, `httpx.MockTransport` for provider-dispatch tests, and temp-dir git repos for sandbox tests. No API keys, no network.
 
-## Running the tool end-to-end
+Run a single test:
 
 ```bash
-# stub provider — reads .jitcatch_stub.json, no network
-jitcatch pr . --stub
-
-# local model
-ollama pull qwen2.5-coder:7b
-jitcatch pr . --provider ollama --model qwen2.5-coder:7b
+pytest tests/test_reviewer_retry.py::ReportSortingTest -v
 ```
 
-## Adding a language adapter
+### Trying changes against a real repo
 
-1. Subclass `jitcatch.adapters.base.Adapter`.
-2. Register in `jitcatch/adapters/__init__.py`.
-3. Add a fixture under `tests/fixtures/<lang>/` with a parent commit and a child commit that introduces a regression.
-4. Extend `tests/test_smoke.py` to run the stub pipeline against the fixture.
+```bash
+cd /path/to/any/repo/with/changes
+jitcatch pr . --stub                 # offline demo
+jitcatch pr . --provider ollama      # free, local model
+```
+
+See [`docs/VALUE.md`](docs/VALUE.md) for how to read the output.
+
+---
 
 ## Pull request checklist
 
-- [ ] `pytest tests/` passes locally.
-- [ ] New behavior has a test.
-- [ ] Public CLI flags are documented in `README.md`.
-- [ ] `CHANGELOG.md` has an `Unreleased` entry describing the user-visible change.
-- [ ] Commit messages explain *why*, not just *what*.
+Before you open a PR:
 
-## Commit style
+- [ ] Tests pass (`pytest tests/`).
+- [ ] New behavior has a test. Bug fixes include a regression test.
+- [ ] No new runtime dependencies unless clearly justified in the PR description.
+- [ ] No breaking CLI/flag changes without a migration note in `CHANGELOG.md`.
+- [ ] Docs touched if user-visible behavior changed (`README.md`, `docs/`).
 
-Short imperative subject, optional body. Example:
+The PR description should answer: **what changed, and why**. The "what" can be short — readers have the diff. Focus the description on motivation, tradeoffs, and anything that isn't obvious from the code.
 
-```
-add dodgy-diff workflow retry cap
+---
 
-The retry loop could spin forever on a pathological LLM response.
-Cap at --max-retries (default 3) and surface the reason in the report.
-```
+## What makes a good contribution
 
-## Reporting bugs
+**Small and focused** beats large and sweeping. If your change is big, split it.
 
-Use the bug report template. The most useful bug reports include:
+**Doesn't expand scope.** A bug fix shouldn't reformat adjacent code. A feature shouldn't refactor unrelated modules.
 
-- `jitcatch --version` / commit SHA.
-- Provider + model (`--provider ollama --model qwen2.5-coder:7b`).
-- Minimal diff that reproduces the issue.
-- The `.jitcatch/output/<name>.json` if one was produced.
+**Preserves the core invariant.** JitCatch's value is executable evidence (test passes on parent, fails on child). Features should strengthen that signal, not dilute it. LLM-opinion-only features belong in the reviewer channel, not the test-gen path.
 
-## Security issues
+**Keeps the pipeline deterministic where possible.** Rule-based filters (`jitcatch/assessor/rules.py`) are preferred over LLM-dependent ones for signals that can be expressed as patterns.
 
-Do **not** open a public issue for security vulnerabilities. See [SECURITY.md](SECURITY.md).
+---
+
+## Architecture orientation
+
+See the architecture diagram and module list in [`README.md`](README.md). The short version:
+
+- `jitcatch/cli.py` — argument parsing, subcommand dispatch.
+- `jitcatch/llm.py` — provider clients.
+- `jitcatch/revs.py` — parent/child ref resolution.
+- `jitcatch/context.py` — diff bundle assembly.
+- `jitcatch/workflows/` — test-gen strategies, reviewer, retry loop.
+- `jitcatch/runner.py` — `WorktreeSandbox`, test evaluation.
+- `jitcatch/assessor/` — rules + LLM judge.
+- `jitcatch/adapters/` — per-language test write+run plug-ins.
+- `jitcatch/report.py` — JSON and Markdown output.
+
+### Adding a new language
+
+Subclass `jitcatch.adapters.base.Adapter`, register it in `jitcatch/adapters/__init__.py`, and add a fixture in `tests/fixtures/`. See `jitcatch/adapters/python.py` and `jitcatch/adapters/javascript.py` as references.
+
+### Adding a new provider
+
+Subclass `LLMClient` in `jitcatch/llm.py` and wire it into the `_make_llm` dispatch in `jitcatch/cli.py`. The OpenAI-compatible client already covers most hosted endpoints — prefer `--provider openai-compat --base-url ...` over a new client when the API is compatible.
+
+---
+
+## Code style
+
+- Keep comments focused on **why**, not **what**. Delete comments that only restate the code.
+- Prefer standard library over new dependencies.
+- No feature flags or backwards-compat shims for pre-1.0 changes — we can break things cleanly.
+- Keep functions short. If a function is doing two things, split it.
+
+---
+
+## Reporting security issues
+
+Don't open a public issue for a security vulnerability. See [`SECURITY.md`](SECURITY.md).
+
+---
 
 ## Code of conduct
 
-This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By participating you agree to abide by it.
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). By participating, you agree to abide by its terms.

@@ -15,6 +15,7 @@ from .llm import (
     LLMClient,
     OLLAMA_DEFAULT_BASE_URL,
     OLLAMA_DEFAULT_MODEL,
+    OllamaClient,
     OpenAICompatClient,
     StubClient,
 )
@@ -247,7 +248,15 @@ def _make_llm(args: argparse.Namespace, repo: Path) -> LLMClient:
                     "(or use --provider=ollama for localhost:11434)"
                 )
         api_key = os.environ.get("OPENAI_API_KEY")
-        return OpenAICompatClient(
+        # Route ollama through native /api/chat so `format: "json"` and
+        # num_ctx are honored. The OpenAI-compat /v1 shim silently drops
+        # both, which is what caused deepseek-coder-v2:16b to produce
+        # prose summaries instead of the required JSON schemas. The
+        # generic openai-compat path (Groq / Together / vLLM) keeps the
+        # /v1 chat-completions transport — those providers often reject
+        # Ollama-specific fields.
+        client_cls = OllamaClient if provider == "ollama" else OpenAICompatClient
+        return client_cls(
             model=model,
             base_url=base_url,
             api_key=api_key,

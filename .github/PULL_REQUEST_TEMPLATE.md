@@ -1,37 +1,33 @@
-<!-- Thanks for the PR. Keep it scoped — one concern per PR. -->
-
 ## Summary
 
-<!-- 1–3 bullets. What changed, and why. -->
-
--
--
-
-## Linked issue
-
-<!-- Closes #123 / Related to #456. If there's no issue yet and the change is non-trivial, open one first. -->
+<!-- What changed and why. Keep the "what" short — reviewers have the diff.
+     Focus the description on motivation, tradeoffs, and anything not obvious
+     from the code. Link the related issue with "Fixes #123" if applicable. -->
 
 ## Type of change
 
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Refactor (no user-visible change)
-- [ ] Docs
-- [ ] CI / tooling
-
-## How was this tested
-
-<!-- Commands you ran. End-to-end runs against a real diff are the gold standard. -->
-
-```bash
-pytest tests/
-```
+- [ ] Bug fix (non-breaking)
+- [ ] New feature (non-breaking)
+- [ ] Breaking change (behavior, CLI flags, or output schema)
+- [ ] Documentation only
+- [ ] Refactor / internal — no user-visible change
+- [ ] CI / build
 
 ## Checklist
 
-- [ ] `pytest tests/` passes locally.
-- [ ] New behavior has a test (or I explained why it can't be tested).
-- [ ] `README.md` updated if a public flag or output shape changed.
-- [ ] `CHANGELOG.md` has an `Unreleased` entry.
-- [ ] No secrets, API keys, or private repo content committed.
-- [ ] I have read [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+- [ ] Tests pass locally (`pytest tests/`)
+- [ ] New behavior is covered by a test. Bug fixes include a regression test.
+- [ ] No new runtime dependencies (or clearly justified above)
+- [ ] `CHANGELOG.md` updated under the `[Unreleased]` section if user-visible
+- [ ] Docs updated (`README.md` or `docs/`) if user-visible behavior changed
+
+## How I tested this
+
+<!-- Exact commands, repos you tried it on, edge cases you exercised.
+     For UI-less tools like JitCatch, include a sample report snippet or
+     JSON diff if the change affects output. -->
+
+## Screenshots / report snippets
+
+<!-- Optional. Paste before/after markdown report sections or JSON keys
+     when the change affects output shape or ordering. -->

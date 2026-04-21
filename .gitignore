@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -5,12 +6,33 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node (for JS adapter tests / fixtures)
 node_modules/
+
+# JitCatch runtime / output
 .jitcatch_work/
+.jitcatch/
+.jitcatch_stub.json
+
+# Build artifacts
 dist/
 build/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Editors / tool caches
 .omc/
 .claude/
+.idea/
+.vscode/
+
+# Secrets
 .env
 .env.local

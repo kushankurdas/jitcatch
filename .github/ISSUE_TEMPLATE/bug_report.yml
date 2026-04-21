@@ -1,0 +1,99 @@
+name: Bug report
+description: Report a bug in JitCatch
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much of this form as you can — it helps us reproduce and fix the issue faster.
+
+        For **security vulnerabilities**, do not file a public issue. See [SECURITY.md](../../SECURITY.md) for the private disclosure process.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A short, clear description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, ideally on a small public repo or a minimal fixture.
+      placeholder: |
+        1. `git clone ...`
+        2. `cd ...`
+        3. `jitcatch pr . --provider ...`
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Include relevant output. For long logs, attach a file or use a gist.
+    validations:
+      required: true
+
+  - type: input
+    id: jitcatch-version
+    attributes:
+      label: JitCatch version / commit
+      description: Output of `pip show jitcatch | grep -i version` or the commit SHA.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: LLM provider
+      options:
+        - anthropic
+        - ollama
+        - openai-compat
+        - stub (offline)
+        - other
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: e.g. claude-sonnet-4-6, qwen2.5-coder:7b
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: e.g. 3.11.6
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: e.g. macOS 14.5, Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else relevant — related issues, workarounds you tried, etc.
+    validations:
+      required: false

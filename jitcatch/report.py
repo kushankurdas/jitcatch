@@ -283,9 +283,16 @@ def _group_evidence(
     return groups
 
 
-def _group_sort_key(g: Dict) -> Tuple[int, float]:
+def _group_sort_key(g: Dict) -> Tuple[int, int, float]:
+    """Primary key `has_test` (0 when a failing test backs the group, 1
+    when the group is review-only) guarantees executable evidence ranks
+    above LLM opinion regardless of severity. A `Critical` review-only
+    finding without a failing test should never outrank a `High`
+    test-backed catch — the whole product is built on that inversion
+    being wrong."""
     f = g["finding"]
     tests = g["tests"]
+    has_test = 0 if tests else 1
     if f:
         sev = _SEV_ORDER.get(f.severity, 9)
         score = tests[0].final_score if tests else f.confidence
@@ -293,7 +300,7 @@ def _group_sort_key(g: Dict) -> Tuple[int, float]:
         c = tests[0]
         sev = _SEV_ORDER.get(_severity_from_score(c.final_score), 9)
         score = c.final_score
-    return (sev, -score)
+    return (has_test, sev, -score)
 
 
 def write_json(
@@ -301,14 +308,22 @@ def write_json(
     out_path: Path,
     findings: Optional[List[ReviewFinding]] = None,
 ) -> None:
+    """Order candidates so JSON readers see the same ranking as the md
+    report: weak catches first by `final_score` desc (likely regressions
+    at top, fp-flagged entries at the bottom), then non-weak candidates
+    (tests that passed or failed on both revs) appended in input order."""
     findings = findings or []
+    ordered = sorted(
+        candidates,
+        key=lambda c: (not c.is_weak_catch, -c.final_score),
+    )
     payload = {
         "summary": {
             "total": len(candidates),
             "weak_catches": sum(1 for c in candidates if c.is_weak_catch),
             "review_findings": len(findings),
         },
-        "candidates": [to_dict(c) for c in candidates],
+        "candidates": [to_dict(c) for c in ordered],
         "review_findings": [_finding_to_dict(f) for f in findings],
     }
     out_path.write_text(json.dumps(payload, indent=2))
@@ -510,6 +525,121 @@ def _best_diff_file(
     return best
 
 
+_FP_SEVERITIES = {"Trivial", "Info"}
+
+
+def _group_severity(g: Dict) -> str:
+    f = g["finding"]
+    tests = g["tests"]
+    if f:
+        return f.severity or "Medium"
+    return _severity_from_score(tests[0].final_score)
+
+
+def _is_likely_fp(g: Dict) -> bool:
+    """Bucket a group into the collapsed FP section when the severity
+    resolves to Trivial/Info. Test-only groups drop here when their
+    final_score < 0.2 (severity mapping in `_severity_from_score`).
+    Review-only findings never land here — the LLM only assigns
+    Critical/High/Medium/Low — so opinion flags always stay visible in
+    the main list."""
+    return _group_severity(g) in _FP_SEVERITIES
+
+
+def _render_group(
+    g: Dict,
+    i: int,
+    md: List[str],
+    meta: Dict[str, str],
+    file_diffs: Dict[str, str],
+) -> None:
+    f = g["finding"]
+    tests = g["tests"]
+    title = f.title if f else tests[0].test.name
+    md.append(f"### {i}. {title}")
+    md.append("")
+
+    if f:
+        loc_path = f.file or (
+            tests[0].target_files[0] if tests and tests[0].target_files else ""
+        )
+        line = f.line
+        sev = f.severity or "Medium"
+        cat = f.category or "-"
+        conf = f.confidence
+    else:
+        c = tests[0]
+        rf, rl, cls, _body = _risk_meta_for(c)
+        loc_path = rf or (c.target_files[0] if c.target_files else "")
+        line = rl
+        sev = _severity_from_score(c.final_score)
+        cat = cls or "-"
+        conf = c.judge_tp_prob
+
+    loc_md = _file_link(loc_path, line, meta) if loc_path else "`(no file)`"
+    md.append(
+        f"**Location:** {loc_md} &nbsp;•&nbsp; "
+        f"**Severity:** {_severity_md(sev)} &nbsp;•&nbsp; "
+        f"**Category:** `{cat}` &nbsp;•&nbsp; "
+        f"**Confidence:** `{conf:.2f}`"
+    )
+    md.append("")
+
+    diff_file: Optional[str] = None
+    if loc_path and file_diffs.get(loc_path):
+        diff_file = loc_path
+    elif tests:
+        diff_file = _best_diff_file(tests[0], file_diffs)
+    if diff_file and file_diffs.get(diff_file):
+        if line is not None:
+            body = _hunk_around(file_diffs[diff_file], line)
+        else:
+            tok_source = f.title + " " + (f.rationale or "") if f else (
+                tests[0].test.name + " " + (tests[0].test.rationale or "")
+            )
+            body = _best_hunk_by_tokens(file_diffs[diff_file], _tokens(tok_source))
+        if body.strip():
+            md.append("```diff")
+            md.append(_strip_hunk_header(body))
+            md.append("```")
+            md.append("")
+
+    rationale = ""
+    if f:
+        rationale = f.rationale or ""
+    elif tests:
+        rationale = tests[0].judge_rationale or tests[0].test.rationale or ""
+    if rationale.strip():
+        md.append("**Why this is a bug**")
+        md.append("")
+        formatted = _format_rationale(rationale.strip())
+        for ln in formatted.split("\n"):
+            md.append(f"> {ln}" if ln else ">")
+        md.append("")
+
+    if f and f.validator_note and "already caught" not in f.validator_note:
+        md.append(f"_Expert says: {f.validator_note}_")
+        md.append("")
+
+    if tests:
+        md.append("<details>")
+        label = f"Unit test{'s' if len(tests) > 1 else ''} ({len(tests)})"
+        md.append(f"<summary>{label}</summary>")
+        md.append("")
+        multi = len(tests) > 1
+        for idx, t in enumerate(tests, 1):
+            lang = _lang_hint(t.target_files[0]) if t.target_files else ""
+            prefix = f"{idx}. " if multi else ""
+            md.append(f"**{prefix}`{t.test.name}`**")
+            md.append("")
+            md.append(f"```{lang}")
+            md.append(t.test.code.rstrip())
+            md.append("```")
+            md.append("")
+        md.append("</details>")
+        md.append("")
+
+
 def write_markdown(
     candidates: List[CatchCandidate],
     out_path: Path,
@@ -559,104 +689,48 @@ def write_markdown(
         out_path.write_text("\n".join(md))
         return
 
+    main_groups = [g for g in groups if not _is_likely_fp(g)]
+    fp_groups = [g for g in groups if _is_likely_fp(g)]
+
     n_test_only = sum(1 for g in groups if not g["finding"])
     n_review_only = sum(1 for g in groups if g["finding"] and not g["tests"])
     n_both = sum(1 for g in groups if g["finding"] and g["tests"])
 
     md.append("## Findings")
     md.append("")
-    md.append(
+    summary = (
         f"_{len(groups)} bug{'s' if len(groups) != 1 else ''} "
         f"— {n_both} with test+review, {n_test_only} test-only, "
-        f"{n_review_only} review-only._"
+        f"{n_review_only} review-only"
     )
+    if fp_groups:
+        summary += (
+            f". {len(fp_groups)} likely false positive"
+            f"{'s' if len(fp_groups) != 1 else ''} collapsed below._"
+        )
+    else:
+        summary += "._"
+    md.append(summary)
     md.append("")
 
-    for i, g in enumerate(groups, 1):
-        f = g["finding"]
-        tests = g["tests"]
-        title = f.title if f else tests[0].test.name
-        md.append(f"### {i}. {title}")
+    if not main_groups:
+        md.append("_No high-signal bugs — everything scored into the false-positive bucket. Expand the section below to review._")
         md.append("")
 
-        if f:
-            loc_path = f.file or (
-                tests[0].target_files[0] if tests and tests[0].target_files else ""
-            )
-            line = f.line
-            sev = f.severity or "Medium"
-            cat = f.category or "-"
-            conf = f.confidence
-        else:
-            c = tests[0]
-            rf, rl, cls, _body = _risk_meta_for(c)
-            loc_path = rf or (c.target_files[0] if c.target_files else "")
-            line = rl
-            sev = _severity_from_score(c.final_score)
-            cat = cls or "-"
-            conf = c.judge_tp_prob
+    for i, g in enumerate(main_groups, 1):
+        _render_group(g, i, md, meta, file_diffs)
 
-        loc_md = _file_link(loc_path, line, meta) if loc_path else "`(no file)`"
+    if fp_groups:
+        md.append("<details>")
         md.append(
-            f"**Location:** {loc_md} &nbsp;•&nbsp; "
-            f"**Severity:** {_severity_md(sev)} &nbsp;•&nbsp; "
-            f"**Category:** `{cat}` &nbsp;•&nbsp; "
-            f"**Confidence:** `{conf:.2f}`"
+            f"<summary><strong>Likely false positives ({len(fp_groups)})</strong>"
+            " — low score, skim only</summary>"
         )
         md.append("")
-
-        diff_file: Optional[str] = None
-        if loc_path and file_diffs.get(loc_path):
-            diff_file = loc_path
-        elif tests:
-            diff_file = _best_diff_file(tests[0], file_diffs)
-        if diff_file and file_diffs.get(diff_file):
-            if line is not None:
-                body = _hunk_around(file_diffs[diff_file], line)
-            else:
-                tok_source = f.title + " " + (f.rationale or "") if f else (
-                    tests[0].test.name + " " + (tests[0].test.rationale or "")
-                )
-                body = _best_hunk_by_tokens(file_diffs[diff_file], _tokens(tok_source))
-            if body.strip():
-                md.append("```diff")
-                md.append(_strip_hunk_header(body))
-                md.append("```")
-                md.append("")
-
-        rationale = ""
-        if f:
-            rationale = f.rationale or ""
-        elif tests:
-            rationale = tests[0].judge_rationale or tests[0].test.rationale or ""
-        if rationale.strip():
-            md.append("**Why this is a bug**")
-            md.append("")
-            formatted = _format_rationale(rationale.strip())
-            for ln in formatted.split("\n"):
-                md.append(f"> {ln}" if ln else ">")
-            md.append("")
-
-        if f and f.validator_note and "already caught" not in f.validator_note:
-            md.append(f"_Expert says: {f.validator_note}_")
-            md.append("")
-
-        if tests:
-            md.append("<details>")
-            label = f"Unit test{'s' if len(tests) > 1 else ''} ({len(tests)})"
-            md.append(f"<summary>{label}</summary>")
-            md.append("")
-            multi = len(tests) > 1
-            for idx, t in enumerate(tests, 1):
-                lang = _lang_hint(t.target_files[0]) if t.target_files else ""
-                prefix = f"{idx}. " if multi else ""
-                md.append(f"**{prefix}`{t.test.name}`**")
-                md.append("")
-                md.append(f"```{lang}")
-                md.append(t.test.code.rstrip())
-                md.append("```")
-                md.append("")
-            md.append("</details>")
-            md.append("")
+        start = len(main_groups) + 1
+        for offset, g in enumerate(fp_groups):
+            _render_group(g, start + offset, md, meta, file_diffs)
+        md.append("</details>")
+        md.append("")
 
     out_path.write_text("\n".join(md))
