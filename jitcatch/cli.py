@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple  # noqa: F401
 
-from . import adapters, context, diff as gitdiff, report, revs
+from . import adapters, cache as risk_cache, context, diff as gitdiff, report, revs
 from .adapters import Adapter
 from .assessor import apply_rules, judge_candidate, score_candidate
 from .config import CatchCandidate, GeneratedTest, ReviewFinding
@@ -19,7 +19,7 @@ from .llm import (
     OpenAICompatClient,
     StubClient,
 )
-from .runner import WorktreeSandbox, evaluate_test
+from .runner import WorktreeSandbox, evaluate_test, rerun_child
 from .workflows import (
     find_gaps,
     run_agentic_reviewer,
@@ -39,6 +39,8 @@ def main(argv: List[str] | None = None) -> int:
         return cmd_run(args)
     if cmd in ("last", "pr", "staged", "working"):
         return cmd_bundle(args)
+    if cmd == "explain":
+        return cmd_explain(args)
     parser.print_help()
     return 2
 
@@ -79,7 +81,58 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--max-bytes", type=int, default=context.MAX_BYTES_DEFAULT)
         _add_shared_args(s)
 
+    # explain — read the latest report, print the candidate detail, then drop
+    # into an interactive LLM chat about that candidate. Non-TTY stdin (pipes,
+    # redirected input, CI) skips the chat loop and falls back to the plain
+    # detail dump so explain stays scriptable.
+    e = sub.add_parser(
+        "explain",
+        help="show full detail for a candidate by its stable id (prefix "
+             "ok), then open an interactive LLM chat about it. Reads "
+             "the latest JSON report under .jitcatch/output/ unless "
+             "--report is given.",
+    )
+    e.add_argument("repo", help="path to git repo")
+    e.add_argument("id", help="candidate id (prefix match, min 4 chars)")
+    e.add_argument(
+        "--report",
+        default=None,
+        help="path to a specific JSON report; defaults to the most "
+             "recently modified jitcatch-*.json under the repo's output dir.",
+    )
+    e.add_argument(
+        "--no-chat",
+        action="store_true",
+        help="print the candidate detail and exit — skip the chat REPL.",
+    )
+    _add_llm_args(e)
+
     return p
+
+
+def _add_llm_args(p: argparse.ArgumentParser) -> None:
+    """LLM provider args needed by any subcommand that calls into an LLM.
+    Subset of `_add_shared_args` — no generation/retry/report knobs."""
+    p.add_argument("--stub", action="store_true", help="use StubClient (no API calls)")
+    p.add_argument(
+        "--provider",
+        choices=["auto", "anthropic", "ollama", "openai-compat"],
+        default="auto",
+    )
+    p.add_argument("--base-url", default=None)
+    p.add_argument("--model", default=None)
+    p.add_argument("--max-tokens", type=int, default=None)
+    p.add_argument("--llm-timeout", type=float, default=120.0)
+    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--log-dir", default=None)
+    # Stage-model overrides are unused for chat but `_make_llm` reads them,
+    # so declare them as Nones to keep that helper happy.
+    p.set_defaults(
+        model_risks=None,
+        model_tests=None,
+        model_judge=None,
+        model_review=None,
+    )
 
 
 def _add_shared_args(p: argparse.ArgumentParser) -> None:
@@ -165,6 +218,25 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--timeout", type=int, default=60, help="per-test timeout (s)")
     p.add_argument(
+        "--flake-check",
+        type=int,
+        default=3,
+        help="number of extra child re-runs to confirm a failure is "
+             "deterministic. If any re-run passes, the candidate is "
+             "flagged fp:flake_runtime. Default 3; set to 0 to disable.",
+    )
+    p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="bypass the risk-inference cache for this run. Default cache "
+             "lives at <repo>/.jitcatch/cache/ with 7-day TTL.",
+    )
+    p.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="purge the risk-inference cache before running.",
+    )
+    p.add_argument(
         "--llm-timeout",
         type=float,
         default=120.0,
@@ -175,8 +247,16 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
         "--filename",
         default=None,
         help="report base name (no extension). Writes "
-             "<repo>/.jitcatch/output/<name>.json and .md. "
+             "<repo>/.jitcatch/output/<name>.<ext>. "
              "Auto-generated from timestamp when omitted.",
+    )
+    p.add_argument(
+        "--format",
+        dest="output_format",
+        default="",
+        help="comma-separated human-readable formats: html, md, all. "
+             "JSON is always written (required by `jitcatch explain`). "
+             "Example: --format html,md.",
     )
     p.add_argument("--verbose", action="store_true", help="print debug info (empty LLM responses, etc.)")
     p.add_argument(
@@ -193,6 +273,305 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
         help="override directory for per-call LLM transcripts (default: "
              "<repo>/.jitcatch/logs/ when --verbose is on). Logs are untruncated.",
     )
+
+
+def cmd_explain(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    report_path = _resolve_explain_report(args, repo)
+    if report_path is None:
+        print(
+            f"error: no JSON report found under {repo / '.jitcatch' / 'output'}. "
+            "Run jitcatch against the repo first, or pass --report <path>.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        payload = __import__("json").loads(report_path.read_text())
+    except (OSError, ValueError) as e:
+        print(f"error: cannot read {report_path}: {e}", file=sys.stderr)
+        return 2
+
+    wanted = (args.id or "").strip().lower()
+    if len(wanted) < 4:
+        print("error: id prefix must be at least 4 characters", file=sys.stderr)
+        return 2
+    candidates = payload.get("candidates") or []
+    matches = [c for c in candidates if str(c.get("id", "")).startswith(wanted)]
+    if not matches:
+        print(f"error: no candidate matching id prefix '{wanted}' in {report_path}", file=sys.stderr)
+        return 1
+    if len(matches) > 1:
+        print(f"error: id prefix '{wanted}' is ambiguous — {len(matches)} matches:", file=sys.stderr)
+        for c in matches:
+            print(f"  {c.get('id')}  {c.get('test', {}).get('name')}", file=sys.stderr)
+        return 1
+
+    cand = matches[0]
+
+    if getattr(args, "no_chat", False):
+        print(_format_explain(cand, report_path))
+        return 0
+    # Skip the REPL when stdin isn't a tty (pipes, redirected input, CI) —
+    # keeps explain scriptable and avoids spinning up an LLM client for
+    # no reason. Fall back to the plain detail dump in that case.
+    if not sys.stdin.isatty():
+        print(_format_explain(cand, report_path))
+        return 0
+    return _run_explain_chat(args, repo, cand, payload)
+
+
+class _Style:
+    """ANSI styling helper. Colors only when stdout is a TTY and NO_COLOR
+    isn't set — keeps piped/CI output clean."""
+
+    def __init__(self, enabled: bool) -> None:
+        self.on = enabled
+
+    def _w(self, code: str, s: str) -> str:
+        return f"\033[{code}m{s}\033[0m" if self.on else s
+
+    def dim(self, s: str) -> str: return self._w("2", s)
+    def bold(self, s: str) -> str: return self._w("1", s)
+    def cyan(self, s: str) -> str: return self._w("36", s)
+    def green(self, s: str) -> str: return self._w("32", s)
+    def yellow(self, s: str) -> str: return self._w("33", s)
+    def magenta(self, s: str) -> str: return self._w("35", s)
+    def red(self, s: str) -> str: return self._w("31", s)
+
+
+def _run_explain_chat(
+    args: argparse.Namespace,
+    repo: Path,
+    cand: dict,
+    payload: dict,
+) -> int:
+    st = _Style(sys.stdout.isatty() and not os.environ.get("NO_COLOR"))
+    try:
+        llm = _make_llm(args, repo)
+    except Exception as e:  # noqa: BLE001
+        print(st.red(f"\n✗ cannot start chat: {e}"), file=sys.stderr)
+        return 0
+    system = _explain_system_prompt(cand, payload.get("meta") or {})
+    messages: List[dict] = []
+    _print_chat_banner(cand, st)
+    you = st.bold(st.cyan("you")) + st.dim(" ❯ ")
+    llm_label = st.bold(st.green("llm")) + st.dim(" ❯ ")
+    while True:
+        try:
+            line = input(f"\n{you}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not line or line.lower() in ("exit", "quit", ":q"):
+            print(st.dim("bye."))
+            break
+        messages.append({"role": "user", "content": line})
+        if st.on:
+            sys.stdout.write(st.dim("\n  thinking…"))
+            sys.stdout.flush()
+        try:
+            reply = llm.chat(system, messages, label="explain.chat")
+        except Exception as e:  # noqa: BLE001
+            if st.on:
+                sys.stdout.write("\r\033[K")
+            print(st.red(f"✗ {e}"), file=sys.stderr)
+            messages.pop()
+            continue
+        if st.on:
+            sys.stdout.write("\r\033[K")
+        messages.append({"role": "assistant", "content": reply})
+        print(f"\n{llm_label}{reply.rstrip()}")
+    return 0
+
+
+def _print_chat_banner(cand: dict, st: "_Style") -> None:
+    test = cand.get("test") or {}
+    cid = str(cand.get("id") or "")[:12]
+    name = test.get("name") or "?"
+    workflow = cand.get("workflow") or "?"
+    bucket = cand.get("judge_bucket") or ""
+    score = cand.get("final_score")
+    weak = cand.get("is_weak_catch")
+
+    bar = st.dim("─" * 60)
+    title = st.bold(st.magenta("jitcatch explain"))
+    meta_bits = [st.cyan(cid), st.bold(name), st.dim(workflow)]
+    if bucket:
+        meta_bits.append(st.yellow(f"bucket={bucket}"))
+    if isinstance(score, (int, float)):
+        meta_bits.append(st.dim(f"score={score:+.2f}"))
+    if weak:
+        meta_bits.append(st.green("weak-catch"))
+    print()
+    print(bar)
+    print(f"  {title}  {'  '.join(meta_bits)}")
+    print(bar)
+    print(st.dim("  ask about this candidate. empty line, 'exit', or Ctrl-D to quit."))
+
+
+def _explain_system_prompt(cand: dict, meta: dict) -> str:
+    """Seed the chat with the full candidate record so the LLM can reason
+    about the finding without a second tool call. The detail dump the user
+    already saw is included verbatim so follow-ups like "why did the child
+    fail?" or "is this a real regression?" can be answered grounded in the
+    same text."""
+    import json as _json
+    test = cand.get("test") or {}
+    parent = cand.get("parent_result") or {}
+    child = cand.get("child_result") or {}
+    context_lines = [
+        "You are a senior engineer helping the user understand a jitcatch "
+        "regression-test candidate. Ground every answer in the JSON context "
+        "below. If the data doesn't contain the answer, say so — don't "
+        "speculate about code you haven't been shown. Be concise.",
+        "",
+        "--- RUN META ---",
+        _json.dumps(meta, indent=2, default=str),
+        "",
+        "--- CANDIDATE ---",
+        f"id: {cand.get('id')}",
+        f"workflow: {cand.get('workflow')}",
+        f"weak_catch: {cand.get('is_weak_catch')}",
+        f"final_score: {cand.get('final_score')}",
+        f"judge: tp_prob={cand.get('judge_tp_prob')} "
+        f"bucket={cand.get('judge_bucket')}",
+        f"target_files: {cand.get('target_files')}",
+        f"flags: {cand.get('rule_flags')}",
+        f"risks: {cand.get('risks')}",
+        "",
+        f"-- rationale --\n{cand.get('judge_rationale') or test.get('rationale') or ''}",
+        "",
+        f"-- test name --\n{test.get('name')}",
+        "",
+        f"-- test code --\n{test.get('code') or ''}",
+        "",
+        f"-- parent result (status={parent.get('status')} "
+        f"exit_code={parent.get('exit_code')}) --",
+        f"stdout:\n{parent.get('stdout') or ''}",
+        f"stderr:\n{parent.get('stderr') or ''}",
+        "",
+        f"-- child result (status={child.get('status')} "
+        f"exit_code={child.get('exit_code')}) --",
+        f"stdout:\n{child.get('stdout') or ''}",
+        f"stderr:\n{child.get('stderr') or ''}",
+    ]
+    return "\n".join(context_lines)
+
+
+def _resolve_explain_report(args: argparse.Namespace, repo: Path) -> Optional[Path]:
+    if args.report:
+        p = Path(args.report).expanduser().resolve()
+        return p if p.exists() else None
+    out_dir = repo / ".jitcatch" / "output"
+    if not out_dir.exists():
+        return None
+    # Pick the newest jitcatch-*.json by mtime — matches the default
+    # naming scheme from `_resolve_output_paths`.
+    candidates = sorted(
+        out_dir.glob("jitcatch-*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _format_explain(cand: dict, report_path: Path) -> str:
+    """Render a single candidate as a human-readable block. Pulls every
+    field the report persists — test code, parent/child output, judge
+    rationale, rule flags, risks — so the reader has everything needed
+    to decide on the finding without another tool."""
+    test = cand.get("test") or {}
+    parent = cand.get("parent_result") or {}
+    child = cand.get("child_result") or {}
+    flags = cand.get("rule_flags") or []
+    risks = cand.get("risks") or []
+    target_files = cand.get("target_files") or []
+
+    lines: List[str] = []
+    lines.append(f"id:          {cand.get('id')}")
+    lines.append(f"name:        {test.get('name')}")
+    lines.append(f"workflow:    {cand.get('workflow')}")
+    lines.append(f"weak_catch:  {cand.get('is_weak_catch')}")
+    lines.append(f"final_score: {cand.get('final_score', 0):+.3f}")
+    lines.append(
+        f"judge:       tp_prob={cand.get('judge_tp_prob', 0):+.2f} "
+        f"bucket={cand.get('judge_bucket', '')}"
+    )
+    if target_files:
+        lines.append(f"files:       {', '.join(target_files)}")
+    if flags:
+        lines.append(f"flags:       {', '.join(flags)}")
+    if risks:
+        lines.append("risks:")
+        for r in risks:
+            lines.append(f"  - {r}")
+    rationale = cand.get("judge_rationale") or test.get("rationale") or ""
+    if rationale:
+        lines.append("")
+        lines.append("-- rationale --")
+        lines.append(rationale.rstrip())
+    code = test.get("code") or ""
+    if code:
+        lines.append("")
+        lines.append("-- test code --")
+        lines.append(code.rstrip())
+    for label, res in (("parent", parent), ("child", child)):
+        status = res.get("status", "")
+        ec = res.get("exit_code", "")
+        stdout = (res.get("stdout") or "").rstrip()
+        stderr = (res.get("stderr") or "").rstrip()
+        lines.append("")
+        lines.append(f"-- {label} result (status={status}, exit_code={ec}) --")
+        if stdout:
+            lines.append("stdout:")
+            lines.append(stdout)
+        if stderr:
+            lines.append("stderr:")
+            lines.append(stderr)
+    lines.append("")
+    lines.append(f"source: {report_path}")
+    return "\n".join(lines)
+
+
+_PRES_FORMATS = frozenset({"html", "md"})
+_VALID_FORMATS = _PRES_FORMATS | {"json", "all"}
+
+
+def _formats(args: argparse.Namespace) -> set:
+    """Parse --format into a set of human-readable formats to emit in
+    addition to the always-on JSON report. 'all' expands to every
+    presentation format. 'json' is accepted but a no-op since JSON is
+    always written. Unknown values raise SystemExit so a typo doesn't
+    silently skip the format the user wanted."""
+    raw = getattr(args, "output_format", "") or ""
+    values = {v.strip().lower() for v in raw.split(",") if v.strip()}
+    if "all" in values:
+        return set(_PRES_FORMATS)
+    bad = values - _VALID_FORMATS
+    if bad:
+        print(
+            f"error: --format got unknown value(s) {sorted(bad)}; "
+            f"valid: html, md, all (json is always written)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return values & _PRES_FORMATS
+
+
+def _cache_repo(args: argparse.Namespace, repo: Path) -> Optional[Path]:
+    """Return the repo path used for risk-cache lookup, or None when
+    caching is disabled. --no-cache bypasses both read and write."""
+    if getattr(args, "no_cache", False):
+        return None
+    return repo
+
+
+def _cache_model(llm: LLMClient) -> str:
+    """Identify the risks-stage model for cache keying. Falls back to
+    the client's default model when no per-stage override is set, and
+    to empty string for clients (Stub) without a model attr."""
+    stage = getattr(llm, "_stage_models", None) or {}
+    return stage.get("risks") or getattr(llm, "_model", "") or ""
 
 
 def _resolve_provider(requested: str) -> str:
@@ -276,6 +655,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"error: {repo} is not a git repo", file=sys.stderr)
         return 2
 
+    if getattr(args, "clear_cache", False):
+        n = risk_cache.clear_cache(repo)
+        print(f"[JitCatch] cache cleared: {n} entries removed", file=sys.stderr)
+
     try:
         parent_rev = gitdiff.resolve_rev(repo, args.parent)
         child_rev = gitdiff.resolve_rev(repo, args.child)
@@ -312,7 +695,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     all_tests: list[tuple[str, list[str], GeneratedTest, list[str]]] = []
     risks: list[str] = []
     if args.workflow in ("intent", "both"):
-        risks, intent_tests = run_intent_aware(llm, parent_source, diff_text, adapter.lang, hints)
+        risks, intent_tests = run_intent_aware(
+            llm, parent_source, diff_text, adapter.lang, hints,
+            cache_repo=_cache_repo(args, repo),
+            cache_model=_cache_model(llm),
+        )
         for t in intent_tests:
             all_tests.append(("intent_aware", risks, t, [args.file]))
     if args.workflow in ("dodgy", "both"):
@@ -367,6 +754,10 @@ def cmd_bundle(args: argparse.Namespace) -> int:
     if not (repo / ".git").exists():
         print(f"error: {repo} is not a git repo", file=sys.stderr)
         return 2
+
+    if getattr(args, "clear_cache", False):
+        n = risk_cache.clear_cache(repo)
+        print(f"[JitCatch] cache cleared: {n} entries removed", file=sys.stderr)
 
     try:
         pair = revs.resolve(
@@ -458,7 +849,11 @@ def _cmd_bundle_inner(args: argparse.Namespace, repo: Path, pair: revs.RevPair) 
         group_tests: list = []
         group_risks: list = []
         if args.workflow in ("intent", "both"):
-            group_risks, intent_tests = run_intent_aware_bundle(llm, bundle, adapter.lang, hints)
+            group_risks, intent_tests = run_intent_aware_bundle(
+                llm, bundle, adapter.lang, hints,
+                cache_repo=_cache_repo(args, repo),
+                cache_model=_cache_model(llm),
+            )
             for t in intent_tests:
                 group_tests.append(("intent_aware", group_risks, t, list(selected)))
         if args.workflow in ("dodgy", "both"):
@@ -501,27 +896,31 @@ def _emit_empty_report(
     findings: Optional[List[ReviewFinding]] = None,
 ) -> None:
     repo = Path(meta.get("repo") or args.repo).resolve()
-    json_path, md_path = _resolve_output_paths(args, repo)
+    json_path, md_path, html_path = _resolve_output_paths(args, repo)
+    fmts = _formats(args)
     report.write_json([], json_path, findings=findings or [])
-    report.write_markdown([], md_path, meta=meta, file_diffs={}, findings=findings or [])
+    if "md" in fmts:
+        report.write_markdown([], md_path, meta=meta, file_diffs={}, findings=findings or [])
+    if "html" in fmts:
+        report.write_html([], html_path, meta=meta, file_diffs={}, findings=findings or [])
     print(report.render_text([], findings=findings or []))
 
 
-def _resolve_output_paths(args: argparse.Namespace, repo: Path) -> Tuple[Path, Path]:
-    """Return (json_path, md_path) under <repo>/.jitcatch/output/.
+def _resolve_output_paths(args: argparse.Namespace, repo: Path) -> Tuple[Path, Path, Path]:
+    """Return (json_path, md_path, html_path) under <repo>/.jitcatch/output/.
     Filename comes from --filename (stem only); falls back to a
-    timestamped default. The output directory is created on demand."""
+    timestamped default. The output directory is created on demand.
+    All three formats are always written."""
     import time as _time
     name = (args.filename or "").strip()
     if not name:
         name = f"jitcatch-{_time.strftime('%Y%m%d-%H%M%S')}"
-    # Strip accidental extensions / path separators.
     name = Path(name).name
-    if name.lower().endswith((".json", ".md")):
+    if name.lower().endswith((".json", ".md", ".html")):
         name = Path(name).stem
     out_dir = repo / ".jitcatch" / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir / f"{name}.json", out_dir / f"{name}.md"
+    return out_dir / f"{name}.json", out_dir / f"{name}.md", out_dir / f"{name}.html"
 
 
 def _numstat(repo: Path, parent: str, child: str) -> str:
@@ -557,7 +956,7 @@ def _eval_one_test(
     args: argparse.Namespace,
 ) -> Optional[CatchCandidate]:
     try:
-        parent_res, child_res, _ = evaluate_test(adapter, sb, test, timeout=args.timeout)
+        parent_res, child_res, child_art = evaluate_test(adapter, sb, test, timeout=args.timeout)
     except Exception as e:  # noqa: BLE001
         print(f"eval error for {test.name}: {e}", file=sys.stderr)
         return None
@@ -570,6 +969,22 @@ def _eval_one_test(
         target_files=list(target_files),
     )
     cand.rule_flags = apply_rules(cand)
+    # Runtime flake detector. When the initial child run failed (weak-catch
+    # shape), re-run N extra times against the same artifact. If any re-run
+    # passes, the failure is non-deterministic (timing / ordering / network
+    # race leaked past the static FP_FLAKY_PAT regex) and we demote the
+    # candidate with fp:flake_runtime. Skips when disabled (--flake-check 0)
+    # or when the initial run didn't fail (nothing to confirm).
+    flake_check = int(getattr(args, "flake_check", 0) or 0)
+    if flake_check > 0 and child_res is not None and not child_res.passed:
+        try:
+            reruns = rerun_child(adapter, sb, child_art, timeout=args.timeout, n=flake_check)
+        except Exception as e:  # noqa: BLE001
+            print(f"flake check error for {test.name}: {e}", file=sys.stderr)
+            reruns = []
+        if any(r.passed for r in reruns):
+            if "fp:flake_runtime" not in cand.rule_flags:
+                cand.rule_flags.append("fp:flake_runtime")
     if cand.is_weak_catch and not args.no_judge:
         try:
             judge_candidate(llm, cand, parent_source_for_judge, diff_for_judge, adapter.lang)
@@ -698,14 +1113,27 @@ def _evaluate_and_report(
                     if not added_any:
                         break
 
-    json_path, md_path = _resolve_output_paths(args, repo)
-    report.write_json(candidates, json_path, findings=findings)
-    report.write_markdown(
-        candidates, md_path, meta=meta, file_diffs=file_diffs, findings=findings
-    )
+    usage = getattr(llm, "usage", None)
+    json_path, md_path, html_path = _resolve_output_paths(args, repo)
+    fmts = _formats(args)
+    report.write_json(candidates, json_path, findings=findings, usage=usage)
+    if "md" in fmts:
+        report.write_markdown(
+            candidates, md_path, meta=meta, file_diffs=file_diffs,
+            findings=findings, usage=usage,
+        )
+    if "html" in fmts:
+        report.write_html(
+            candidates, html_path, meta=meta, file_diffs=file_diffs,
+            findings=findings, usage=usage,
+        )
     print(report.render_text(candidates, findings=findings))
-    print(f"\nJSON report: {json_path}")
-    print(f"Markdown:    {md_path}")
+    print()
+    print(f"JSON report: {json_path}")
+    if "md" in fmts:
+        print(f"Markdown:    {md_path}")
+    if "html" in fmts:
+        print(f"HTML:        {html_path}")
     # LLM call stats — surfaces truncation fast.
     total = getattr(llm, "total_calls", None)
     trunc = getattr(llm, "truncated_calls", None)
@@ -716,7 +1144,27 @@ def _evaluate_and_report(
             + (f" | logs: {log_dir}" if log_dir else ""),
             file=sys.stderr,
         )
+    _print_usage_footer(usage)
     return 0
+
+
+def _print_usage_footer(usage) -> None:
+    """Token + cost summary. Skip when no calls were made (StubClient)."""
+    if usage is None or usage.calls == 0:
+        return
+    print(
+        f"Tokens: in={usage.input_tokens:,} out={usage.output_tokens:,} "
+        f"| cost: ${usage.cost_usd:.4f}",
+        file=sys.stderr,
+    )
+    if usage.by_stage:
+        parts = []
+        for stage, s in sorted(usage.by_stage.items()):
+            parts.append(
+                f"{stage}={s['input_tokens']:,}/{s['output_tokens']:,}"
+                + (f" (${s['cost_usd']:.4f})" if s["cost_usd"] > 0 else "")
+            )
+        print(f"  by stage (in/out): {' | '.join(parts)}", file=sys.stderr)
 
 
 if __name__ == "__main__":

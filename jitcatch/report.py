@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -8,6 +9,23 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .config import CatchCandidate, ReviewFinding
+
+
+def stable_id(cand: CatchCandidate) -> str:
+    """Stable short hash identifying a candidate across runs. Keys on
+    workflow + test name + target files so the same catch produced by
+    two runs resolves to the same id (enabling `jitcatch explain`).
+    Uses sha256 truncated to 12 hex chars — 48 bits — effectively
+    collision-free at the handful-per-run scale this operates at."""
+    h = hashlib.sha256()
+    h.update((cand.workflow or "").encode())
+    h.update(b"\0")
+    h.update((cand.test.name or "").encode())
+    h.update(b"\0")
+    for f in sorted(cand.target_files or []):
+        h.update(f.encode())
+        h.update(b"\0")
+    return h.hexdigest()[:12]
 
 
 _RISK_PREFIX_RE = re.compile(
@@ -143,6 +161,7 @@ def _risk_meta_for(cand: CatchCandidate) -> Tuple[Optional[str], Optional[int], 
 def to_dict(cand: CatchCandidate) -> dict:
     d = asdict(cand)
     d["is_weak_catch"] = cand.is_weak_catch
+    d["id"] = stable_id(cand)
     return d
 
 
@@ -307,6 +326,7 @@ def write_json(
     candidates: List[CatchCandidate],
     out_path: Path,
     findings: Optional[List[ReviewFinding]] = None,
+    usage=None,
 ) -> None:
     """Order candidates so JSON readers see the same ranking as the md
     report: weak catches first by `final_score` desc (likely regressions
@@ -317,12 +337,15 @@ def write_json(
         candidates,
         key=lambda c: (not c.is_weak_catch, -c.final_score),
     )
+    summary: Dict = {
+        "total": len(candidates),
+        "weak_catches": sum(1 for c in candidates if c.is_weak_catch),
+        "review_findings": len(findings),
+    }
+    if usage is not None and hasattr(usage, "to_dict"):
+        summary["usage"] = usage.to_dict()
     payload = {
-        "summary": {
-            "total": len(candidates),
-            "weak_catches": sum(1 for c in candidates if c.is_weak_catch),
-            "review_findings": len(findings),
-        },
+        "summary": summary,
         "candidates": [to_dict(c) for c in ordered],
         "review_findings": [_finding_to_dict(f) for f in findings],
     }
@@ -577,12 +600,15 @@ def _render_group(
         conf = c.judge_tp_prob
 
     loc_md = _file_link(loc_path, line, meta) if loc_path else "`(no file)`"
-    md.append(
+    loc_line = (
         f"**Location:** {loc_md} &nbsp;•&nbsp; "
         f"**Severity:** {_severity_md(sev)} &nbsp;•&nbsp; "
         f"**Category:** `{cat}` &nbsp;•&nbsp; "
         f"**Confidence:** `{conf:.2f}`"
     )
+    if tests:
+        loc_line += f" &nbsp;•&nbsp; **ID:** `{stable_id(tests[0])}`"
+    md.append(loc_line)
     md.append("")
 
     diff_file: Optional[str] = None
@@ -640,12 +666,40 @@ def _render_group(
         md.append("")
 
 
+def _usage_stage_parts(usage) -> List[str]:
+    parts = []
+    for stage, s in sorted(usage.by_stage.items()):
+        p = f"{stage}={s['input_tokens']:,}/{s['output_tokens']:,}"
+        if s.get("cost_usd", 0) > 0:
+            p += f" (${s['cost_usd']:.4f})"
+        parts.append(p)
+    return parts
+
+
+def _usage_md_lines(usage) -> List[str]:
+    if usage is None or getattr(usage, "calls", 0) == 0:
+        return []
+    lines = [
+        "| Metric | Value |",
+        "| --- | --- |",
+        f"| **LLM calls** | {usage.calls} |",
+        f"| **Tokens** | in={usage.input_tokens:,} out={usage.output_tokens:,} |",
+        f"| **Cost (USD)** | ${usage.cost_usd:.4f} |",
+    ]
+    if usage.by_stage:
+        parts = _usage_stage_parts(usage)
+        lines.append(f"| **Stages (in/out)** | {' • '.join(parts)} |")
+    lines.append("")
+    return lines
+
+
 def write_markdown(
     candidates: List[CatchCandidate],
     out_path: Path,
     meta: Optional[Dict[str, str]] = None,
     file_diffs: Optional[Dict[str, str]] = None,
     findings: Optional[List[ReviewFinding]] = None,
+    usage=None,
 ) -> None:
     """Human-readable report. `meta` carries run context (command, revs,
     repo). `file_diffs` maps repo-relative path → unified diff text so
@@ -679,6 +733,12 @@ def write_markdown(
             )
             md.append(f"| **changed files** ({len(file_diffs)}) | {files_cell} |")
         md.append("")
+
+    usage_md = _usage_md_lines(usage)
+    if usage_md:
+        md.append("## LLM usage")
+        md.append("")
+        md.extend(usage_md)
 
     groups = _group_evidence(weak, findings)
     groups.sort(key=_group_sort_key)
@@ -734,3 +794,313 @@ def write_markdown(
         md.append("")
 
     out_path.write_text("\n".join(md))
+
+
+_HTML_CSS = """
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;
+     margin:0;padding:24px;max-width:1400px;margin-left:auto;margin-right:auto;
+     color:#1f2328;background:#fff;line-height:1.5}
+h1{margin:0 0 16px;font-size:28px}
+h2{margin:32px 0 12px;font-size:20px;border-bottom:1px solid #d0d7de;padding-bottom:6px}
+h3{margin:24px 0 8px;font-size:16px}
+a{color:#0969da;text-decoration:none}
+a:hover{text-decoration:underline}
+.meta{border:1px solid #d0d7de;border-radius:6px;padding:12px 16px;background:#f6f8fa;
+      margin-bottom:16px;font-size:14px}
+.meta .row{display:flex;gap:8px;margin:2px 0}
+.meta .k{font-weight:600;min-width:110px;color:#57606a}
+.group{border:1px solid #d0d7de;border-radius:6px;padding:16px 20px;margin:12px 0;
+       background:#fff}
+.loc{font-size:13px;color:#57606a;margin:4px 0 12px}
+.loc .sep{margin:0 8px;color:#8b949e}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;
+       margin-right:4px}
+.badge.Critical{background:#cf222e;color:#fff}
+.badge.High{background:#fb8500;color:#fff}
+.badge.Medium{background:#d4a72c;color:#1f2328}
+.badge.Low{background:#1a7f37;color:#fff}
+.badge.Trivial{background:#8b949e;color:#fff}
+.badge.Info{background:#0969da;color:#fff}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+     background:#f6f8fa;border:1px solid #d0d7de;border-radius:4px;padding:1px 5px;font-size:13px}
+pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;
+    overflow-x:auto;font-size:13px;margin:8px 0}
+pre code{background:none;border:none;padding:0}
+.diff{white-space:pre;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+      background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;
+      overflow-x:auto;font-size:13px;margin:8px 0}
+.diff-add{background:#dafbe1;color:#1a7f37;display:block}
+.diff-del{background:#ffebe9;color:#cf222e;display:block}
+blockquote{border-left:4px solid #d0d7de;margin:8px 0;padding:4px 12px;color:#57606a;
+           background:transparent}
+blockquote p{margin:6px 0}
+details{margin:12px 0}
+summary{cursor:pointer;font-weight:600;padding:6px 0}
+.fp{border:1px dashed #8b949e;border-radius:6px;padding:12px 16px;margin-top:24px}
+.fp summary{color:#8b949e}
+.count{color:#8b949e;font-weight:400;font-size:13px}
+.empty{font-style:italic;color:#8b949e}
+"""
+
+
+def _html_escape(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _html_file_link(path: str, line: Optional[int], meta: Dict[str, str]) -> str:
+    if not path:
+        return '<code>(no file)</code>'
+    label = f"{path}:{line}" if line else path
+    repo = meta.get("repo")
+    if not repo:
+        return f"<code>{_html_escape(label)}</code>"
+    abs_src = os.path.join(repo.rstrip("/"), path)
+    out_dir = meta.get("out_dir")
+    href = os.path.relpath(abs_src, out_dir) if out_dir else f"file://{abs_src}"
+    if line:
+        href += f"#L{line}"
+    return f'<a href="{_html_escape(href)}"><code>{_html_escape(label)}</code></a>'
+
+
+def _html_diff_block(body: str) -> str:
+    """Color add/del lines in a diff block. Preserves exact whitespace —
+    uses a <div class="diff"> with white-space:pre rather than <pre> so
+    per-line background colors span the full content width."""
+    out: List[str] = ['<div class="diff">']
+    for ln in body.splitlines():
+        esc = _html_escape(ln)
+        if ln.startswith("+") and not ln.startswith("+++"):
+            out.append(f'<span class="diff-add">{esc}</span>')
+        elif ln.startswith("-") and not ln.startswith("---"):
+            out.append(f'<span class="diff-del">{esc}</span>')
+        else:
+            out.append(esc)
+    out.append("</div>")
+    return "\n".join(out)
+
+
+def _render_group_html(
+    g: Dict,
+    i: int,
+    html: List[str],
+    meta: Dict[str, str],
+    file_diffs: Dict[str, str],
+) -> None:
+    f = g["finding"]
+    tests = g["tests"]
+    title = f.title if f else tests[0].test.name
+
+    if f:
+        loc_path = f.file or (
+            tests[0].target_files[0] if tests and tests[0].target_files else ""
+        )
+        line = f.line
+        sev = f.severity or "Medium"
+        cat = f.category or "-"
+        conf = f.confidence
+    else:
+        c = tests[0]
+        rf, rl, cls, _body = _risk_meta_for(c)
+        loc_path = rf or (c.target_files[0] if c.target_files else "")
+        line = rl
+        sev = _severity_from_score(c.final_score)
+        cat = cls or "-"
+        conf = c.judge_tp_prob
+
+    html.append('<div class="group">')
+    html.append(f"<h3>{i}. {_html_escape(title)}</h3>")
+    html.append('<div class="loc">')
+    html.append(f'<strong>Location:</strong> {_html_file_link(loc_path, line, meta)}')
+    html.append('<span class="sep">•</span>')
+    html.append(f'<strong>Severity:</strong> <span class="badge {_html_escape(sev)}">{_html_escape(sev)}</span>')
+    html.append('<span class="sep">•</span>')
+    html.append(f'<strong>Category:</strong> <code>{_html_escape(cat)}</code>')
+    html.append('<span class="sep">•</span>')
+    html.append(f'<strong>Confidence:</strong> <code>{conf:.2f}</code>')
+    if tests:
+        sid = stable_id(tests[0])
+        html.append('<span class="sep">•</span>')
+        html.append(f'<strong>ID:</strong> <code>{_html_escape(sid)}</code>')
+    html.append('</div>')
+
+    diff_file: Optional[str] = None
+    if loc_path and file_diffs.get(loc_path):
+        diff_file = loc_path
+    elif tests:
+        diff_file = _best_diff_file(tests[0], file_diffs)
+    if diff_file and file_diffs.get(diff_file):
+        if line is not None:
+            body = _hunk_around(file_diffs[diff_file], line)
+        else:
+            tok_source = f.title + " " + (f.rationale or "") if f else (
+                tests[0].test.name + " " + (tests[0].test.rationale or "")
+            )
+            body = _best_hunk_by_tokens(file_diffs[diff_file], _tokens(tok_source))
+        body = _strip_hunk_header(body)
+        if body.strip():
+            html.append(_html_diff_block(body))
+
+    rationale = ""
+    if f:
+        rationale = f.rationale or ""
+    elif tests:
+        rationale = tests[0].judge_rationale or tests[0].test.rationale or ""
+    if rationale.strip():
+        html.append("<p><strong>Why this is a bug</strong></p>")
+        html.append("<blockquote>")
+        for para in _format_rationale(rationale.strip()).split("\n\n"):
+            if para.strip():
+                html.append(f"<p>{_html_escape(para)}</p>")
+        html.append("</blockquote>")
+
+    if f and f.validator_note and "already caught" not in f.validator_note:
+        html.append(f"<p><em>Expert says: {_html_escape(f.validator_note)}</em></p>")
+
+    if tests:
+        label = f"Unit test{'s' if len(tests) > 1 else ''} ({len(tests)})"
+        html.append("<details>")
+        html.append(f"<summary>{label}</summary>")
+        multi = len(tests) > 1
+        for idx, t in enumerate(tests, 1):
+            prefix = f"{idx}. " if multi else ""
+            html.append(f"<p>{prefix}<code>{_html_escape(t.test.name)}</code></p>")
+            html.append(f"<pre><code>{_html_escape(t.test.code.rstrip())}</code></pre>")
+        html.append("</details>")
+    html.append("</div>")
+
+
+def _usage_html_block(usage) -> List[str]:
+    if usage is None or getattr(usage, "calls", 0) == 0:
+        return []
+    rows = [
+        ("LLM calls", str(usage.calls)),
+        ("Tokens", f"in={usage.input_tokens:,} out={usage.output_tokens:,}"),
+        ("Cost (USD)", f"${usage.cost_usd:.4f}"),
+    ]
+    if usage.by_stage:
+        rows.append(("Stages (in/out)", " • ".join(_usage_stage_parts(usage))))
+    out = ['<div class="meta">']
+    for k, v in rows:
+        out.append(
+            f'<div class="row"><span class="k">{_html_escape(k)}</span>'
+            f"<span>{_html_escape(v)}</span></div>"
+        )
+    out.append("</div>")
+    return out
+
+
+def write_html(
+    candidates: List[CatchCandidate],
+    out_path: Path,
+    meta: Optional[Dict[str, str]] = None,
+    file_diffs: Optional[Dict[str, str]] = None,
+    findings: Optional[List[ReviewFinding]] = None,
+    usage=None,
+) -> None:
+    """Self-contained HTML report. Pre-bundled CSS inline — no CDN, no
+    external fetches, works offline. Same grouping/ranking as markdown."""
+    meta = dict(meta or {})
+    meta.setdefault("out_dir", str(out_path.parent))
+    file_diffs = file_diffs or {}
+    findings = list(findings or [])
+
+    weak_all = [c for c in candidates if c.is_weak_catch]
+    weak, _ = _dedup_weak(weak_all)
+    _annotate_findings(findings, weak)
+
+    html: List[str] = []
+    html.append("<!doctype html>")
+    html.append('<html lang="en"><head><meta charset="utf-8">')
+    html.append("<title>JitCatch Report</title>")
+    html.append(f"<style>{_HTML_CSS}</style>")
+    html.append("</head><body>")
+    html.append("<h1>JitCatch Report</h1>")
+
+    if meta or file_diffs:
+        html.append('<div class="meta">')
+        for k in ("command", "repo", "parent", "child", "base"):
+            v = meta.get(k)
+            if v:
+                html.append(
+                    f'<div class="row"><span class="k">{_html_escape(k)}</span>'
+                    f'<code>{_html_escape(str(v))}</code></div>'
+                )
+        if file_diffs:
+            links = " ".join(
+                _html_file_link(p, None, meta) for p in sorted(file_diffs)
+            )
+            html.append(
+                f'<div class="row"><span class="k">changed files ({len(file_diffs)})</span>'
+                f"<span>{links}</span></div>"
+            )
+        html.append("</div>")
+
+    usage_html = _usage_html_block(usage)
+    if usage_html:
+        html.append("<h2>LLM usage</h2>")
+        html.extend(usage_html)
+
+    groups = _group_evidence(weak, findings)
+    groups.sort(key=_group_sort_key)
+
+    if not groups:
+        html.append(
+            '<p class="empty">No bugs surfaced — no failing tests and no review findings.</p>'
+        )
+        html.append("</body></html>")
+        out_path.write_text("\n".join(html))
+        return
+
+    main_groups = [g for g in groups if not _is_likely_fp(g)]
+    fp_groups = [g for g in groups if _is_likely_fp(g)]
+
+    n_test_only = sum(1 for g in groups if not g["finding"])
+    n_review_only = sum(1 for g in groups if g["finding"] and not g["tests"])
+    n_both = sum(1 for g in groups if g["finding"] and g["tests"])
+
+    html.append("<h2>Findings</h2>")
+    summary = (
+        f'{len(groups)} bug{"s" if len(groups) != 1 else ""} '
+        f"— {n_both} with test+review, {n_test_only} test-only, "
+        f"{n_review_only} review-only"
+    )
+    if fp_groups:
+        summary += (
+            f". {len(fp_groups)} likely false positive"
+            f"{'s' if len(fp_groups) != 1 else ''} collapsed below."
+        )
+    else:
+        summary += "."
+    html.append(f'<p class="count"><em>{_html_escape(summary)}</em></p>')
+
+    if not main_groups:
+        html.append(
+            '<p class="empty">No high-signal bugs — everything scored into the '
+            "false-positive bucket. Expand the section below to review.</p>"
+        )
+
+    for i, g in enumerate(main_groups, 1):
+        _render_group_html(g, i, html, meta, file_diffs)
+
+    if fp_groups:
+        html.append('<details class="fp">')
+        html.append(
+            f"<summary><strong>Likely false positives ({len(fp_groups)})</strong>"
+            " — low score, skim only</summary>"
+        )
+        start = len(main_groups) + 1
+        for offset, g in enumerate(fp_groups):
+            _render_group_html(g, start + offset, html, meta, file_diffs)
+        html.append("</details>")
+
+    html.append("</body></html>")
+    out_path.write_text("\n".join(html))

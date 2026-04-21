@@ -384,6 +384,84 @@ class CallMeta:
     log_path: Optional[Path]
 
 
+# USD per 1M tokens, (input, output). Missing models = free (local) or
+# unknown (shown as $0.00 in the footer; raw token counts still reported).
+MODEL_PRICING_USD_PER_M: dict = {
+    "claude-opus-4-7": (15.0, 75.0),
+    "claude-opus-4-6": (15.0, 75.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-sonnet-4-5": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+
+def _stage_of(label: str) -> str:
+    """`tests.bundle.intent.retry` -> `tests`. Keeps per-stage buckets
+    small — retry/bundle variants all roll up to their parent stage so
+    cost reporting stays readable at 4 rows."""
+    return (label or "unknown").split(".", 1)[0]
+
+
+def _cost_usd(model: str, in_tok: int, out_tok: int) -> float:
+    rate = MODEL_PRICING_USD_PER_M.get(model)
+    if not rate:
+        return 0.0
+    in_rate, out_rate = rate
+    return (in_tok * in_rate + out_tok * out_rate) / 1_000_000.0
+
+
+class UsageStats:
+    """Per-run token + cost accounting. Aggregates by stage and by model
+    so the footer can show where spend went. Zero cost for local models
+    (Ollama / unpriced tags) — raw tokens still tracked."""
+
+    def __init__(self) -> None:
+        self.calls: int = 0
+        self.input_tokens: int = 0
+        self.output_tokens: int = 0
+        self.cost_usd: float = 0.0
+        self.by_stage: dict = {}
+        self.by_model: dict = {}
+
+    def add(self, label: str, model: str, in_tok: int, out_tok: int) -> None:
+        cost = _cost_usd(model, in_tok, out_tok)
+        self.calls += 1
+        self.input_tokens += in_tok
+        self.output_tokens += out_tok
+        self.cost_usd += cost
+        stage = _stage_of(label)
+        s = self.by_stage.setdefault(
+            stage, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+        )
+        s["calls"] += 1
+        s["input_tokens"] += in_tok
+        s["output_tokens"] += out_tok
+        s["cost_usd"] += cost
+        m = self.by_model.setdefault(
+            model, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+        )
+        m["calls"] += 1
+        m["input_tokens"] += in_tok
+        m["output_tokens"] += out_tok
+        m["cost_usd"] += cost
+
+    def to_dict(self) -> dict:
+        return {
+            "calls": self.calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cost_usd": round(self.cost_usd, 6),
+            "by_stage": {
+                k: {**v, "cost_usd": round(v["cost_usd"], 6)}
+                for k, v in self.by_stage.items()
+            },
+            "by_model": {
+                k: {**v, "cost_usd": round(v["cost_usd"], 6)}
+                for k, v in self.by_model.items()
+            },
+        }
+
+
 class LLMClient(ABC):
     @abstractmethod
     def infer_risks(self, diff: str, parent_source: str, lang: str) -> List[str]: ...
@@ -456,6 +534,18 @@ class LLMClient(ABC):
         returns empty; concrete clients override."""
         return []
 
+    def chat(
+        self,
+        system: str,
+        messages: List[dict],
+        label: str = "explain.chat",
+    ) -> str:
+        """Multi-turn conversational completion used by `jitcatch explain`.
+        `messages` is a list of {"role": "user"|"assistant", "content": ...}
+        entries — the caller owns history and keeps it across turns. Concrete
+        clients override; default is a no-op for stubs/tests."""
+        raise NotImplementedError("chat not implemented for this client")
+
 
 class AnthropicClient(LLMClient):
     def __init__(
@@ -490,6 +580,7 @@ class AnthropicClient(LLMClient):
         self._call_seq = 0
         self.total_calls = 0
         self.truncated_calls = 0
+        self.usage = UsageStats()
 
     def _model_for(self, label: str) -> str:
         stage = label.split(".", 1)[0]
@@ -540,6 +631,7 @@ class AnthropicClient(LLMClient):
         out_tok = int(getattr(usage, "output_tokens", 0) or 0)
         if stop_reason == "max_tokens":
             self.truncated_calls += 1
+        self.usage.add(label, model, in_tok, out_tok)
 
         log_path: Optional[Path] = None
         if self._log_dir:
@@ -824,6 +916,50 @@ class AnthropicClient(LLMClient):
         parsed["raw"] = out
         return parsed
 
+    def chat(
+        self,
+        system: str,
+        messages: List[dict],
+        label: str = "explain.chat",
+    ) -> str:
+        self._call_seq += 1
+        self.total_calls += 1
+        seq = self._call_seq
+        model = self._model_for(label)
+        cap = (
+            self._max_tokens
+            or MODEL_MAX_OUTPUT_TOKENS.get(model, DEFAULT_MODEL_MAX_OUTPUT_TOKENS)
+        )
+        cap, _ = _clamp_max_tokens(model, cap)
+        with self._client.messages.stream(
+            model=model,
+            max_tokens=cap,
+            system=system,
+            messages=messages,
+        ) as stream:
+            msg = stream.get_final_message()
+        parts: List[str] = []
+        for block in msg.content:
+            if getattr(block, "type", None) == "text":
+                parts.append(block.text)
+        text = "".join(parts)
+        usage = getattr(msg, "usage", None)
+        in_tok = int(getattr(usage, "input_tokens", 0) or 0)
+        out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+        self.usage.add(label, model, in_tok, out_tok)
+        if self._log_dir:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
+            log_path = self._log_dir / f"{ts}_{seq:03d}_{safe}.log"
+            log_path.write_text(
+                f"# label: {label}\n# seq: {seq}\n# model: {model}\n"
+                f"# input_tokens: {in_tok}\n# output_tokens: {out_tok}\n"
+                f"\n===== SYSTEM =====\n{system}\n"
+                f"\n===== MESSAGES =====\n{json.dumps(messages, indent=2)}\n"
+                f"\n===== RESPONSE =====\n{text}\n"
+            )
+        return text
+
 
 class OpenAICompatClient(AnthropicClient):
     """OpenAI-compatible chat-completions client for Ollama, LM Studio,
@@ -862,6 +998,7 @@ class OpenAICompatClient(AnthropicClient):
         self._call_seq = 0
         self.total_calls = 0
         self.truncated_calls = 0
+        self.usage = UsageStats()
 
     def _complete(
         self,
@@ -920,6 +1057,7 @@ class OpenAICompatClient(AnthropicClient):
         out_tok = int(usage.get("completion_tokens") or 0)
         if stop_reason == "max_tokens":
             self.truncated_calls += 1
+        self.usage.add(label, model, in_tok, out_tok)
 
         log_path: Optional[Path] = None
         if self._log_dir:
@@ -980,6 +1118,59 @@ class OpenAICompatClient(AnthropicClient):
         # Normalize retry labels ("risks.bundle.retry" -> "risks.bundle").
         key = label[: -len(".retry")] if label.endswith(".retry") else label
         return self._COMPACT_SYSTEM_BY_LABEL.get(key, default)
+
+    def chat(
+        self,
+        system: str,
+        messages: List[dict],
+        label: str = "explain.chat",
+    ) -> str:
+        self._call_seq += 1
+        self.total_calls += 1
+        seq = self._call_seq
+        model = self._model_for(label)
+        ceiling = MODEL_MAX_OUTPUT_TOKENS.get(model, OPENAI_COMPAT_DEFAULT_CAP)
+        cap = min(self._max_tokens or ceiling, ceiling)
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        full_messages = [{"role": "system", "content": system}] + list(messages)
+        body = {
+            "model": model,
+            "messages": full_messages,
+            "max_tokens": cap,
+            "temperature": 0.3,
+            "stream": False,
+        }
+        url = f"{self._base_url}/chat/completions"
+        try:
+            resp = self._http.post(url, json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                f"OpenAI-compat chat failed at {url}: {type(e).__name__}: {e}"
+            ) from e
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError(f"OpenAI-compat chat had no choices: {data!r}")
+        text = str((choices[0].get("message") or {}).get("content") or "")
+        usage = data.get("usage") or {}
+        in_tok = int(usage.get("prompt_tokens") or 0)
+        out_tok = int(usage.get("completion_tokens") or 0)
+        self.usage.add(label, model, in_tok, out_tok)
+        if self._log_dir:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
+            log_path = self._log_dir / f"{ts}_{seq:03d}_{safe}.log"
+            log_path.write_text(
+                f"# label: {label}\n# seq: {seq}\n# model: {model}\n"
+                f"# endpoint: {url}\n"
+                f"# input_tokens: {in_tok}\n# output_tokens: {out_tok}\n"
+                f"\n===== MESSAGES =====\n{json.dumps(full_messages, indent=2)}\n"
+                f"\n===== RESPONSE =====\n{text}\n"
+            )
+        return text
 
 
 class OllamaClient(OpenAICompatClient):
@@ -1083,6 +1274,7 @@ class OllamaClient(OpenAICompatClient):
         out_tok = int(data.get("eval_count") or 0)
         if stop_reason == "max_tokens":
             self.truncated_calls += 1
+        self.usage.add(label, model, in_tok, out_tok)
 
         log_path: Optional[Path] = None
         if self._log_dir:
@@ -1127,6 +1319,58 @@ class OllamaClient(OpenAICompatClient):
             log_path=log_path,
         )
 
+    def chat(
+        self,
+        system: str,
+        messages: List[dict],
+        label: str = "explain.chat",
+    ) -> str:
+        self._call_seq += 1
+        self.total_calls += 1
+        seq = self._call_seq
+        model = self._model_for(label)
+        ceiling = MODEL_MAX_OUTPUT_TOKENS.get(model, OPENAI_COMPAT_DEFAULT_CAP)
+        cap = min(self._max_tokens or ceiling, ceiling)
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        full_messages = [{"role": "system", "content": system}] + list(messages)
+        body = {
+            "model": model,
+            "messages": full_messages,
+            "stream": False,
+            "options": {
+                "temperature": 0.3,
+                "num_ctx": self._num_ctx,
+                "num_predict": cap,
+            },
+        }
+        url = f"{self._base_url}/api/chat"
+        try:
+            resp = self._http.post(url, json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                f"Ollama chat failed at {url}: {type(e).__name__}: {e}"
+            ) from e
+        text = str((data.get("message") or {}).get("content") or "")
+        in_tok = int(data.get("prompt_eval_count") or 0)
+        out_tok = int(data.get("eval_count") or 0)
+        self.usage.add(label, model, in_tok, out_tok)
+        if self._log_dir:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", label)
+            log_path = self._log_dir / f"{ts}_{seq:03d}_{safe}.log"
+            log_path.write_text(
+                f"# label: {label}\n# seq: {seq}\n# model: {model}\n"
+                f"# endpoint: {url}\n"
+                f"# input_tokens: {in_tok}\n# output_tokens: {out_tok}\n"
+                f"\n===== MESSAGES =====\n{json.dumps(full_messages, indent=2)}\n"
+                f"\n===== RESPONSE =====\n{text}\n"
+            )
+        return text
+
 
 class StubClient(LLMClient):
     """Reads canned responses from `.jitcatch_stub.json` at repo root.
@@ -1144,6 +1388,7 @@ class StubClient(LLMClient):
 
     def __init__(self, repo: Path) -> None:
         self._data: dict = {}
+        self.usage = UsageStats()
         stub = repo / ".jitcatch_stub.json"
         if stub.exists():
             try:
@@ -1218,6 +1463,29 @@ class StubClient(LLMClient):
     def retry_tests(self, bundle, lang, hints, gap) -> List[GeneratedTest]:
         raw = self._data.get("retry_tests", []) or []
         return _materialize_tests(raw)
+
+    def chat(
+        self,
+        system: str,
+        messages: List[dict],
+        label: str = "explain.chat",
+    ) -> str:
+        """Canned reply for tests. Schema:
+            {"chat_reply": "fixed string"}
+          or {"chat_replies": ["first", "second", ...]}  # cycled by turn.
+        Falls back to a deterministic echo when neither is set."""
+        replies = self._data.get("chat_replies")
+        if isinstance(replies, list) and replies:
+            turns = sum(1 for m in messages if m.get("role") == "assistant")
+            return str(replies[turns % len(replies)])
+        reply = self._data.get("chat_reply")
+        if reply is not None:
+            return str(reply)
+        last_user = next(
+            (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+            "",
+        )
+        return f"stub reply to: {last_user}"
 
 
 def _materialize_tests(raw: list) -> List[GeneratedTest]:

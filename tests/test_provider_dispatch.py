@@ -144,6 +144,7 @@ def _make_mock_compat_client(transport: httpx.MockTransport) -> llm.OpenAICompat
     c._call_seq = 0
     c.total_calls = 0
     c.truncated_calls = 0
+    c.usage = llm.UsageStats()
     return c
 
 
@@ -246,6 +247,7 @@ def _make_mock_ollama_client(transport: httpx.MockTransport) -> llm.OllamaClient
     c._call_seq = 0
     c.total_calls = 0
     c.truncated_calls = 0
+    c.usage = llm.UsageStats()
     c._num_ctx = 16384
     return c
 

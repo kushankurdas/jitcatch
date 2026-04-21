@@ -131,6 +131,7 @@ class SmokeTest(unittest.TestCase):
                 "--file", filename,
                 "--stub", "--no-judge",
                 "--filename", report_name,
+                "--format", "all",
             ],
             capture_output=True,
             text=True,

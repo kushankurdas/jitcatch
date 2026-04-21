@@ -44,6 +44,10 @@ The "weak catch" is the core invariant. Everything else in the pipeline exists t
 - An LLM-as-judge pass scores each weak catch (`tp_prob`, `bucket`, rationale).
 - A feedback-driven retry loop targets risks the first round missed, with the prior test's failure output in the prompt.
 - An agentic reviewer channel surfaces bugs that test-gen can't reach (mocks, env-coupled paths, untested symbols) — opinion-only findings, kept in a separate section.
+- **Runtime flake detection** re-runs every failing child test N times (default 3) — any flip demotes the candidate with `fp:flake_runtime`.
+- **Parallel worktree evaluation** runs parent and child tests concurrently per candidate.
+- **Risk-inference cache** under `.jitcatch/cache/risks/` keyed on `(bundle + lang + model)` with a 7-day TTL — reruns on the same diff skip the LLM round trip.
+- **Per-run token + cost accounting** surfaces in the report and on stderr, broken down by stage (risks / tests / judge / review).
 
 **Design goals:** local-first, zero-config for Ollama, no API keys required for the full offline path (`--stub`), and deterministic wherever the signal can be expressed as a pattern instead of a prompt.
 
@@ -105,8 +109,9 @@ The "weak catch" is the core invariant. Everything else in the pipeline exists t
                              └─────────────┬─────────────┘
                                            ▼
                                   ┌─────────────────┐
-                                  │  report (json + │
-                                  │  markdown)      │
+                                  │  report         │
+                                  │  html / md /    │
+                                  │  json + usage   │
                                   └─────────────────┘
 ```
 
@@ -139,7 +144,7 @@ cd /path/to/your/repo
 jitcatch pr .
 ```
 
-Output lands in `.jitcatch/output/` (JSON + Markdown) and a summary is printed to stdout.
+Output lands in `.jitcatch/output/`: a JSON report is always written. Pass `--format html` (or `md`, or `all`) to also emit a readable report. A summary is printed to stdout.
 
 ### Try it offline first
 
@@ -184,8 +189,11 @@ jitcatch <subcommand> <repo> [options]
 | `staged` | `HEAD` | synthetic commit of `git diff --cached` | Pre-commit check |
 | `working` | `HEAD` | synthetic commit of working tree | Check uncommitted changes |
 | `run --file <f> --parent <r> --child <r>` | explicit | explicit | Single-file, explicit revs |
+| `explain <repo> <id-prefix>` | — | — | Print full detail for a candidate from the latest JSON report (prefix ≥ 4 chars), then open an interactive LLM chat about it |
 
 `staged` and `working` create a detached **scratch worktree** at `HEAD`, apply your patch there, and commit it — your index and working tree are never mutated.
+
+`explain` reads the most recently modified `jitcatch-*.json` under `.jitcatch/output/` (override with `--report <path>`). JSON is always emitted, so `explain` works after any run. In an interactive terminal it opens a colored LLM REPL seeded with the candidate's full context — ask follow-ups ("is this a real regression?", "what would a proper fix look like?") without leaving the terminal. Pass `--no-chat` or pipe the output to skip the REPL and get the plain candidate detail block instead.
 
 ### Common options
 
@@ -208,9 +216,13 @@ jitcatch <subcommand> <repo> [options]
 | `--max-files <n>` | `20` | Cap on files per adapter group (by churn) |
 | `--max-bytes <n>` | `200_000` | Cap on bundle prompt size |
 | `--timeout <sec>` | `60` | Per-test execution timeout |
+| `--flake-check <n>` | `3` | Extra child re-runs to confirm a failure is deterministic. Any flip tags the candidate `fp:flake_runtime`. Set `0` to disable |
+| `--no-cache` | off | Bypass the risk-inference cache for this run |
+| `--clear-cache` | off | Purge `.jitcatch/cache/` before running |
 | `--llm-timeout <sec>` | `120` | HTTP read timeout per LLM call |
 | `--max-tokens <n>` | model ceiling | Per-call output token cap |
-| `--filename <name>` | timestamped | Base name for JSON/MD reports |
+| `--filename <name>` | timestamped | Base name for report files |
+| `--format <list>` | — | Comma-separated human-readable formats to emit alongside the always-on JSON: `html`, `md`, `all`. Omit the flag → JSON only. Example: `--format html,md` |
 | `--verbose` | off | Write per-call LLM transcripts to `.jitcatch/logs/` |
 | `--log-dir <path>` | — | Override LLM transcript directory |
 
@@ -280,21 +292,61 @@ After the first round of tests runs, JitCatch diffs the risk list against the we
 
 ## Output
 
-Two files per run, under `<repo>/.jitcatch/output/`:
+Reports land under `<repo>/.jitcatch/output/`. The JSON report is always written; readable formats are opt-in via `--format`:
 
-- `jitcatch-<timestamp>.json` — machine-readable, sorted so weak catches come first (by `final_score` descending, non-weak appended).
-- `jitcatch-<timestamp>.md` — human-readable summary with:
-  - **Test-backed findings** (weak catches) — ranked by severity × confidence.
-  - **Reviewer-only findings** — opinion-based, never outrank test-backed.
-  - **Likely false positives** — low-signal entries collapsed to keep the top of the report clean.
+- `jitcatch-<timestamp>.json` — always written. Machine-readable, sorted so weak catches come first (by `final_score` descending, non-weak appended). Consumed by `jitcatch explain`.
+- `jitcatch-<timestamp>.html` — with `--format html` (or `all`). Self-contained single-file HTML: inlines all CSS, no CDN, works offline. Color-coded diffs, severity badges, collapsed false-positive section.
+- `jitcatch-<timestamp>.md` — with `--format md` (or `all`). Same groupings as HTML.
+
+All three group findings into:
+
+- **Test-backed findings** (weak catches) — ranked by severity × confidence.
+- **Reviewer-only findings** — opinion-based, never outrank test-backed.
+- **Likely false positives** — low-signal entries collapsed to keep the top of the report clean.
+
+A **LLM usage** panel (tokens, cost, per-stage breakdown) renders in every format when a real LLM client was used. `--stub` runs omit it.
 
 Each candidate carries:
 
+- `id` — stable 12-hex hash (workflow + test name + sorted target files). Pass any 4+ char prefix to `jitcatch explain`.
 - `parent_result` / `child_result` — pass/fail status, stdout, stderr.
-- `rule_flags` — deterministic assessor signals (`fp:reflection`, `tp:null_value`, …).
+- `rule_flags` — deterministic assessor signals (`fp:reflection`, `fp:flake_runtime`, `tp:null_value`, …).
 - `judge_tp_prob`, `judge_bucket`, `judge_rationale` — LLM-as-judge scores.
 - `final_score` ∈ [-1, 1] — combined ranking score.
 - `target_files` — files the test targets.
+
+### Inspecting a single finding
+
+```bash
+jitcatch last .
+# copy an id prefix from .jitcatch/output/jitcatch-*.json (field: "id")
+jitcatch explain . a7f3b2
+```
+
+`explain` opens an **interactive chat** with the LLM, seeded with that candidate's full context (test code, parent/child stdout/stderr, risks, judge rationale) — no need to open the JSON by hand:
+
+```
+────────────────────────────────────────────────────────────
+  jitcatch explain  a7f3b2c1d0e9  test_parses_empty_body  intent_aware  bucket=High  score=+0.72  weak-catch
+────────────────────────────────────────────────────────────
+  ask about this candidate. empty line, 'exit', or Ctrl-D to quit.
+
+you ❯ is this a real regression or a flake?
+  thinking…
+llm ❯ The `fp:flake_runtime` flag wasn't set and the child failed on …
+
+you ❯ what would a minimal fix look like?
+llm ❯ …
+
+you ❯ exit
+bye.
+```
+
+- Provider/model flags mirror `run` / `pr`: `--provider {auto,anthropic,ollama,openai-compat}`, `--model`, `--base-url`, `--stub`, `--max-tokens`, `--llm-timeout`, `--verbose`, `--log-dir`.
+- Colored banner + prompts (`you ❯` cyan, `llm ❯` green) render only on a TTY. Set `NO_COLOR=1` to disable styling; redirecting stdout also drops colors automatically.
+- `--no-chat` skips the REPL and prints the plain candidate detail block — no LLM call.
+- Non-tty stdin (pipes, redirects, CI) auto-skips the REPL and falls back to the detail block, so `jitcatch explain . a7f3b2 | less` still works.
+- Exit the REPL with an empty line, `exit` / `quit` / `:q`, or Ctrl-D.
 
 See [`docs/VALUE.md`](docs/VALUE.md) (when present) for the three-signal model and a false-positive playbook.
 
@@ -305,13 +357,14 @@ See [`docs/VALUE.md`](docs/VALUE.md) (when present) for the three-signal model a
 ```
 jitcatch/
 ├── cli.py            Argument parsing, subcommand dispatch, end-to-end orchestration
-├── llm.py            Provider clients (Anthropic, Ollama, OpenAI-compat, Stub)
+├── llm.py            Provider clients (Anthropic, Ollama, OpenAI-compat, Stub) + UsageStats
+├── cache.py          Risk-inference disk cache (sha256 keys, TTL, clear)
 ├── revs.py           Parent/child rev resolution + scratch worktrees
 ├── diff.py           Low-level git helpers
 ├── context.py        Bundle assembly, caller discovery, file selection
-├── runner.py         WorktreeSandbox, evaluate_test
+├── runner.py         WorktreeSandbox, evaluate_test (parallel parent/child), rerun_child
 ├── config.py         Dataclasses: CatchCandidate, GeneratedTest, ReviewFinding, TestResult
-├── report.py         JSON + Markdown output
+├── report.py         JSON + Markdown + HTML output, stable_id
 ├── workflows/
 │   ├── intent_aware.py   Risks-first test gen
 │   ├── dodgy_diff.py     Mutation-mindset test gen
@@ -333,6 +386,9 @@ tests/
 ├── test_llm_parse.py      JSON extraction, truncation recovery
 ├── test_pr_mode.py        pr/base-detection logic
 ├── test_provider_dispatch.py  Provider routing via httpx MockTransport
+├── test_cache.py          Risk-inference cache (TTL, key stability, clear)
+├── test_explain.py        stable_id + `jitcatch explain` behavior
+├── test_html_report.py    HTML writer, --format flag, usage panel
 └── fixtures/              Fixture repos for language-adapter tests
 ```
 

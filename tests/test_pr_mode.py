@@ -102,7 +102,8 @@ class PRModeTest(unittest.TestCase):
             self.skipTest("node not installed")
         self._make_repo()
         proc = self._run_cli(
-            "last", str(self.repo), "--stub", "--no-judge", "--filename", "report",
+            "last", str(self.repo), "--stub", "--no-judge",
+            "--filename", "report", "--format", "all",
         )
         self.assertEqual(proc.returncode, 0, msg=f"stdout={proc.stdout}\nstderr={proc.stderr}")
         out = self.repo / ".jitcatch" / "output" / "report.json"
