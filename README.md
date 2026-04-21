@@ -353,3 +353,20 @@ Key ideas from the paper that JitCatch implements:
 - **Dual-commit evaluation.** Every candidate test runs against the parent revision *and* the child revision in isolated sandboxes. JitCatch uses git worktrees; Meta uses its internal build system.
 
 JitCatch is an independent OSS project and is not affiliated with or endorsed by Meta. All production numbers cited above come from the paper; JitCatch has not reproduced them. If you use JitCatch in research, please cite the paper above alongside this repository.
+
+### Citation
+
+```bibtex
+@inproceedings{becker2026jitcatch,
+  author    = {Becker, Matthew and others},
+  title     = {Just-in-Time Catching Test Generation at Meta},
+  booktitle = {Companion Proceedings of the 34th ACM International Conference on the Foundations of Software Engineering (FSE Companion '26)},
+  year      = {2026},
+  month     = jun,
+  address   = {Montreal, Canada},
+  publisher = {ACM},
+  eprint    = {2601.22832},
+  archivePrefix = {arXiv},
+  url       = {https://arxiv.org/abs/2601.22832}
+}
+```

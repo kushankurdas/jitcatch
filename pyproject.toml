@@ -6,13 +6,38 @@ build-backend = "setuptools.build_meta"
 name = "jitcatch"
 version = "0.1.0"
 description = "JitCatch — free, local-first regression-catcher. Dual-worktree runner generates and executes tests against a diff. Implements ideas from Meta's Just-in-Time Catching Test Generation (FSE 2026)."
+readme = "README.md"
 requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Kushankur Das" }]
+keywords = ["testing", "regression", "llm", "test-generation", "ci", "pytest", "git"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "anthropic>=0.40.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/kushankurdas/jitcatch"
+Repository = "https://github.com/kushankurdas/jitcatch"
+Issues = "https://github.com/kushankurdas/jitcatch/issues"
+Changelog = "https://github.com/kushankurdas/jitcatch/blob/main/CHANGELOG.md"
 
 [project.scripts]
 jitcatch = "jitcatch.cli:main"
