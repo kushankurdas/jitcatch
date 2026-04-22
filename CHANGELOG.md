@@ -7,7 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
-- `docs/VALUE.md` — practical guide to interpreting JitCatch output (three-signal model, false-positive playbook, value workflows).
+- `jitcatch explain <repo> <id-prefix>` subcommand. Reads the latest JSON report under `.jitcatch/output/` (override with `--report`), prints the full detail block for a candidate, and drops into a colored interactive LLM chat REPL seeded with that candidate's context. `--no-chat` and non-tty stdin skip the REPL and emit the plain detail block. Documented in [`docs/15-explain-candidate.md`](docs/15-explain-candidate.md).
+- HTML report writer (`report.write_html`). Self-contained single-file output with inlined CSS, color-coded diffs, severity badges, and a collapsed false-positive section.
+- `--format {html,md,all}` flag selects human-readable formats to emit alongside the always-on JSON. Example: `--format html,md`.
+- Runtime flake detection via `--flake-check N` (default 3). Failing child tests are re-run N times; any flip demotes the candidate with `fp:flake_runtime`. Set `0` to disable.
+- Parallel parent/child worktree evaluation in `WorktreeSandbox` — both revs execute their test concurrently per candidate.
+- Risk-inference cache at `<repo>/.jitcatch/cache/risks/` keyed on `(bundle + lang + model)` with a 7-day TTL. `--no-cache` bypasses it for a run; `--clear-cache` purges before running.
+- Per-run token + cost accounting (`UsageStats`). Rendered in every report format and on stderr, broken down by stage (risks / tests / judge / review). Stub runs omit it.
 - Markdown report splits low-signal entries into a collapsed **Likely false positives** section so high-signal bugs surface first.
 - `ReportSortingTest` covering JSON sort order, test-backed vs review-only ranking, and FP-section placement.
 

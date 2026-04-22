@@ -40,7 +40,7 @@ jitcatch pr . --stub                 # offline demo
 jitcatch pr . --provider ollama      # free, local model
 ```
 
-See [`docs/VALUE.md`](docs/VALUE.md) for how to read the output.
+See [`docs/`](docs/) for per-use-case guides and the [Output](README.md#output) section of the README for how findings are grouped and ranked.
 
 ---
 

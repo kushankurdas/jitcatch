@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "anthropic>=0.40.0",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

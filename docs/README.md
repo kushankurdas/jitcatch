@@ -15,6 +15,7 @@ Start with the use case that matches your workflow — you do not need to read t
 | 03 | [last-commit-smoke-test.md](./03-last-commit-smoke-test.md) | Smoke-test the commit you just made | `jitcatch last` |
 | 04 | [pr-review.md](./04-pr-review.md) | Review a whole PR against its base branch | `jitcatch pr` |
 | 05 | [single-file-review.md](./05-single-file-review.md) | Target one file between explicit revs | `jitcatch run` |
+| 15 | [explain-candidate.md](./15-explain-candidate.md) | Inspect a single finding and chat with an LLM about it | `jitcatch explain` |
 
 ### LLM backends
 

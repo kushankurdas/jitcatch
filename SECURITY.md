@@ -13,7 +13,7 @@ JitCatch is pre-1.0. Only the latest release on the `main` branch receives secur
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Report privately via GitHub's [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability) on this repository, or email the maintainer at **`<TODO: maintainer email>`**.
+Report privately via GitHub's [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability) on this repository.
 
 Please include:
 

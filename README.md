@@ -348,7 +348,7 @@ bye.
 - Non-tty stdin (pipes, redirects, CI) auto-skips the REPL and falls back to the detail block, so `jitcatch explain . a7f3b2 | less` still works.
 - Exit the REPL with an empty line, `exit` / `quit` / `:q`, or Ctrl-D.
 
-See [`docs/VALUE.md`](docs/VALUE.md) (when present) for the three-signal model and a false-positive playbook.
+See [`docs/`](docs/) for per-use-case documentation, and the [Output](#output) section above for how findings are grouped and ranked.
 
 ---
 
