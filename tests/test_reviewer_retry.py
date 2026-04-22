@@ -281,13 +281,13 @@ class ReportSortingTest(unittest.TestCase):
             names = [c["test"]["name"] for c in data["candidates"]]
             self.assertEqual(names, ["t_high", "t_mid", "t_low", "t_noise"])
 
-    def test_markdown_test_backed_outranks_critical_review_only(self):
+    def test_markdown_sorts_by_severity_descending(self):
         import tempfile
         test_backed = _make_cand(
             "low severity test catch", "r",
             parent_pass=True, child_pass=False,
         )
-        test_backed.final_score = 0.3
+        test_backed.final_score = 0.3  # → Medium
         review_only = ReviewFinding(
             file="b.js", line=1, title="CRITICAL opinion",
             rationale="no test backs this", severity="Critical",
@@ -300,13 +300,35 @@ class ReportSortingTest(unittest.TestCase):
                 meta={"repo": d}, file_diffs={}, findings=[review_only],
             )
             body = out.read_text()
-            idx_test = body.index("low severity test catch")
-            idx_crit = body.index("CRITICAL opinion")
+            idx_crit = body.index("### 1. CRITICAL opinion")
+            idx_test = body.index("### 2. low severity test catch")
             self.assertLess(
-                idx_test, idx_crit,
-                "test-backed group must render before review-only, "
-                "regardless of review-only severity",
+                idx_crit, idx_test,
+                "higher severity must render first regardless of evidence lane",
             )
+
+    def test_markdown_test_backed_breaks_tie_within_same_severity(self):
+        import tempfile
+        test_backed = _make_cand(
+            "high test catch", "r",
+            parent_pass=True, child_pass=False,
+        )
+        test_backed.final_score = 0.85  # → High
+        review_only = ReviewFinding(
+            file="b.js", line=1, title="High opinion",
+            rationale="same severity, no test", severity="High",
+            category="security", confidence=0.9, validator_verdict="keep",
+        )
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "r.md"
+            report.write_markdown(
+                [test_backed], out,
+                meta={"repo": d}, file_diffs={}, findings=[review_only],
+            )
+            body = out.read_text()
+            idx_test = body.index("### 1. high test catch")
+            idx_review = body.index("### 2. High opinion")
+            self.assertLess(idx_test, idx_review)
 
     def test_markdown_low_score_catch_lands_in_fp_section(self):
         import tempfile

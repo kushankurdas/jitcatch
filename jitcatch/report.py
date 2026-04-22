@@ -303,12 +303,10 @@ def _group_evidence(
 
 
 def _group_sort_key(g: Dict) -> Tuple[int, int, float]:
-    """Primary key `has_test` (0 when a failing test backs the group, 1
-    when the group is review-only) guarantees executable evidence ranks
-    above LLM opinion regardless of severity. A `Critical` review-only
-    finding without a failing test should never outrank a `High`
-    test-backed catch — the whole product is built on that inversion
-    being wrong."""
+    """Primary key is severity descending (Critical → High → … → Info) so
+    the reader sees highest-impact bugs first regardless of evidence
+    lane. `has_test` is a tiebreaker within the same severity —
+    test-backed evidence beats review-only opinion at equal severity."""
     f = g["finding"]
     tests = g["tests"]
     has_test = 0 if tests else 1
@@ -319,7 +317,7 @@ def _group_sort_key(g: Dict) -> Tuple[int, int, float]:
         c = tests[0]
         sev = _SEV_ORDER.get(_severity_from_score(c.final_score), 9)
         score = c.final_score
-    return (has_test, sev, -score)
+    return (sev, has_test, -score)
 
 
 def write_json(
