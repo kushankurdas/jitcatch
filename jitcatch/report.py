@@ -15,7 +15,7 @@ def stable_id(cand: CatchCandidate) -> str:
     """Stable short hash identifying a candidate across runs. Keys on
     workflow + test name + target files so the same catch produced by
     two runs resolves to the same id (enabling `jitcatch explain`).
-    Uses sha256 truncated to 12 hex chars — 48 bits — effectively
+    Uses sha256 truncated to 12 hex chars. 48 bits. Effectively
     collision-free at the handful-per-run scale this operates at."""
     h = hashlib.sha256()
     h.update((cand.workflow or "").encode())
@@ -36,7 +36,7 @@ _RISK_PREFIX_RE = re.compile(
 
 def _file_link(path: str, line: Optional[int], meta: Dict[str, str]) -> str:
     """Build a clickable link to the source file. Prefers a relative
-    path from the report's own directory — VS Code's built-in markdown
+    path from the report's own directory. VS Code's built-in markdown
     preview blocks `file://` links for security, but renders relative
     paths. Falls back to `file://` when we don't know the output dir,
     and to a bare code span when we don't even know the repo."""
@@ -80,7 +80,7 @@ _SEVERITY_BADGES = {
 
 
 def _severity_md(severity: str) -> str:
-    """Colored severity label via emoji — renders in every markdown viewer
+    """Colored severity label via emoji. Renders in every markdown viewer
     (GitHub, VS Code, plain text), unlike inline HTML styles which most
     previewers strip."""
     if not severity:
@@ -124,7 +124,7 @@ def _tokens(s: str) -> set[str]:
 def _risk_meta_for(cand: CatchCandidate) -> Tuple[Optional[str], Optional[int], str, str]:
     """Pick the risk that best matches this test by identifier-token overlap
     with the test name. Bundle workflow lumps every changed file into
-    `target_files`, so file-level matching is too coarse — we need to
+    `target_files`, so file-level matching is too coarse. We need to
     disambiguate by function/symbol name carried in the test name.
     Returns (file, line, class, one_liner)."""
     name_tokens = _tokens(cand.test.name)
@@ -229,7 +229,7 @@ def _annotate_findings(
     findings: List[ReviewFinding], weak: List[CatchCandidate]
 ) -> None:
     """Tag findings already caught by a failing test so the reader can
-    skip past them — the test is stronger evidence than a reasoning
+    skip past them. The test is stronger evidence than a reasoning
     flag. We don't drop them; cross-source agreement is a useful
     signal."""
     caught = _caught_locations(weak)
@@ -240,14 +240,14 @@ def _annotate_findings(
             if not f.validator_note:
                 f.validator_note = "(already caught by a failing test)"
             elif "already caught" not in f.validator_note:
-                f.validator_note = f.validator_note + " — also caught by test"
+                f.validator_note = f.validator_note + ". Also caught by test"
 
 
 _SEV_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Trivial": 4, "Info": 5}
 
 
 def _parsed_risks(c: CatchCandidate) -> List[Tuple[str, str]]:
-    """Only structured `[file:line] (cls) body` risks — no judge_rationale
+    """Only structured `[file:line] (cls) body` risks. No judge_rationale
     fallback. Fallback pollutes matching with generic prose tokens."""
     out: List[Tuple[str, str]] = []
     for r in c.risks or []:
@@ -268,7 +268,7 @@ def _group_evidence(
     finding TITLE. For tests with parsed risks (intent_aware workflow),
     additionally require the finding's file to appear in the test's
     parsed risk files. The finding's rationale is intentionally excluded
-    — it tends to carry generic prose ("config", "credentials", "when")
+   . It tends to carry generic prose ("config", "credentials", "when")
     that over-matches across distinct bugs. Orphan tests form their own
     groups. Cross-source matches keep both evidence lanes for the same
     bug in one entry."""
@@ -305,7 +305,7 @@ def _group_evidence(
 def _group_sort_key(g: Dict) -> Tuple[int, int, float]:
     """Primary key is severity descending (Critical → High → … → Info) so
     the reader sees highest-impact bugs first regardless of evidence
-    lane. `has_test` is a tiebreaker within the same severity —
+    lane. `has_test` is a tiebreaker within the same severity -
     test-backed evidence beats review-only opinion at equal severity."""
     f = g["finding"]
     tests = g["tests"]
@@ -392,7 +392,7 @@ def render_text(
     if findings:
         lines.append("")
         lines.append("=" * 70)
-        lines.append("REVIEW FINDINGS (LLM reasoning — no failing test)")
+        lines.append("REVIEW FINDINGS (LLM reasoning. No failing test)")
         lines.append("=" * 70)
         for i, f in enumerate(findings, 1):
             loc = f.file + (f":{f.line}" if f.line else "")
@@ -430,11 +430,11 @@ _OLD_NEW_RE = re.compile(r"(?<=[\.\?!])\s+(New\b|After\b|Before\b)")
 def _format_rationale(text: str) -> str:
     """Put Old/New (and Before/After) comparison sentences on separate
     paragraphs so the reader can compare them side-by-side. Splits on
-    a sentence boundary (`.`, `?`, `!`) followed by New/After/Before —
+    a sentence boundary (`.`, `?`, `!`) followed by New/After/Before -
     handles bare `New:`, qualified forms like `New code:` / `New
     guard:`, and unpunctuated intros like `New code returns count:` /
     `After fix the caller…`. Single newline inside a blockquote
-    renders as a soft wrap in most previews (including Cursor) — need
+    renders as a soft wrap in most previews (including Cursor). Need
     a blank blockquote line (rendered as `>\n`) to force a real
     paragraph break."""
     return _OLD_NEW_RE.sub(r"\n\n\1", text)
@@ -561,8 +561,8 @@ def _is_likely_fp(g: Dict) -> bool:
     """Bucket a group into the collapsed FP section when the severity
     resolves to Trivial/Info. Test-only groups drop here when their
     final_score < 0.2 (severity mapping in `_severity_from_score`).
-    Review-only findings never land here — the LLM only assigns
-    Critical/High/Medium/Low — so opinion flags always stay visible in
+    Review-only findings never land here. The LLM only assigns
+    Critical/High/Medium/Low. So opinion flags always stay visible in
     the main list."""
     return _group_severity(g) in _FP_SEVERITIES
 
@@ -606,7 +606,7 @@ def _render_group(
     f = g["finding"]
     tests = g["tests"]
     title, loc_path, line, sev, cat, conf, sid = _group_metadata(g)
-    # Explicit HTML anchor — most MD renderers honor it; heading-slug
+    # Explicit HTML anchor. Most MD renderers honor it; heading-slug
     # anchors break on punctuation ("1." becomes unreliable).
     md.append(f'<a id="finding-{i}"></a>')
     md.append(f"### {i}. {title}")
@@ -683,7 +683,7 @@ def _overview_md(
     entries: List[Tuple[int, Dict]], meta: Dict[str, str]
 ) -> List[str]:
     """High-level table over every finding. Each row links to the
-    per-finding anchor rendered further down — useful for long reports."""
+    per-finding anchor rendered further down. Useful for long reports."""
     if not entries:
         return []
     out = [
@@ -695,7 +695,7 @@ def _overview_md(
     for i, g in entries:
         title, loc_path, line, sev, cat, conf, sid = _group_metadata(g)
         loc = _file_link(loc_path, line, meta) if loc_path else "`(no file)`"
-        # Pipe breaks the table — escape any pipes inside the title.
+        # Pipe breaks the table. Escape any pipes inside the title.
         safe_title = (title or "").replace("|", "\\|")
         sid_cell = f"`{sid}`" if sid else "-"
         out.append(
@@ -777,7 +777,7 @@ def write_markdown(
     """Human-readable report. `meta` carries run context (command, revs,
     repo). `file_diffs` maps repo-relative path → unified diff text so
     the report can show hunk headers (line numbers) and +/- lines.
-    `findings` are agentic-reviewer outputs — a separate evidence channel
+    `findings` are agentic-reviewer outputs. A separate evidence channel
     from failing-test weak catches."""
     meta = dict(meta or {})
     meta.setdefault("out_dir", str(out_path.parent))
@@ -811,7 +811,7 @@ def write_markdown(
     groups.sort(key=_group_sort_key)
 
     if not groups:
-        md.append("_No bugs surfaced — no failing tests and no review findings._")
+        md.append("_No bugs surfaced. No failing tests and no review findings._")
         md.append("")
         usage_md = _usage_md_lines(usage)
         if usage_md:
@@ -840,7 +840,7 @@ def write_markdown(
     md.append("")
     summary = (
         f"_{len(groups)} bug{'s' if len(groups) != 1 else ''} "
-        f"— {n_both} with test+review, {n_test_only} test-only, "
+        f"- {n_both} with test+review, {n_test_only} test-only, "
         f"{n_review_only} review-only"
     )
     if fp_groups:
@@ -854,7 +854,7 @@ def write_markdown(
     md.append("")
 
     if not main_groups:
-        md.append("_No high-signal bugs — everything scored into the false-positive bucket. Expand the section below to review._")
+        md.append("_No high-signal bugs. Everything scored into the false-positive bucket. Expand the section below to review._")
         md.append("")
 
     for i, g in enumerate(main_groups, 1):
@@ -864,7 +864,7 @@ def write_markdown(
         md.append("<details>")
         md.append(
             f"<summary><strong>Likely false positives ({len(fp_groups)})</strong>"
-            " — low score, skim only</summary>"
+            ". Low score, skim only</summary>"
         )
         md.append("")
         for i, g in entries[len(main_groups):]:
@@ -963,7 +963,7 @@ def _html_file_link(path: str, line: Optional[int], meta: Dict[str, str]) -> str
 
 
 def _html_diff_block(body: str) -> str:
-    """Color add/del lines in a diff block. Preserves exact whitespace —
+    """Color add/del lines in a diff block. Preserves exact whitespace -
     uses a <div class="diff"> with white-space:pre rather than <pre> so
     per-line background colors span the full content width."""
     out: List[str] = ['<div class="diff">']
@@ -1079,7 +1079,7 @@ def write_html(
     findings: Optional[List[ReviewFinding]] = None,
     usage=None,
 ) -> None:
-    """Self-contained HTML report. Pre-bundled CSS inline — no CDN, no
+    """Self-contained HTML report. Pre-bundled CSS inline. No CDN, no
     external fetches, works offline. Same grouping/ranking as markdown."""
     meta = dict(meta or {})
     meta.setdefault("out_dir", str(out_path.parent))
@@ -1122,7 +1122,7 @@ def write_html(
 
     if not groups:
         html.append(
-            '<p class="empty">No bugs surfaced — no failing tests and no review findings.</p>'
+            '<p class="empty">No bugs surfaced. No failing tests and no review findings.</p>'
         )
         usage_html = _usage_html_block(usage)
         if usage_html:
@@ -1150,7 +1150,7 @@ def write_html(
     html.append("<h2>Findings</h2>")
     summary = (
         f'{len(groups)} bug{"s" if len(groups) != 1 else ""} '
-        f"— {n_both} with test+review, {n_test_only} test-only, "
+        f"- {n_both} with test+review, {n_test_only} test-only, "
         f"{n_review_only} review-only"
     )
     if fp_groups:
@@ -1164,7 +1164,7 @@ def write_html(
 
     if not main_groups:
         html.append(
-            '<p class="empty">No high-signal bugs — everything scored into the '
+            '<p class="empty">No high-signal bugs. Everything scored into the '
             "false-positive bucket. Expand the section below to review.</p>"
         )
 
@@ -1175,7 +1175,7 @@ def write_html(
         html.append('<details class="fp">')
         html.append(
             f"<summary><strong>Likely false positives ({len(fp_groups)})</strong>"
-            " — low score, skim only</summary>"
+            ". Low score, skim only</summary>"
         )
         for i, g in entries[len(main_groups):]:
             _render_group_html(g, i, html, meta, file_diffs)

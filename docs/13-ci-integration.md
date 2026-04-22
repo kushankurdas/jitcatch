@@ -1,4 +1,4 @@
-# Use case 13 — Running JitCatch on every pull request in CI
+# Use case 13. Running JitCatch on every pull request in CI
 
 **Subcommand:** `jitcatch pr . --base <ref>`
 **Typical runtime:** 2 – 10 min depending on provider and diff size.
@@ -7,7 +7,7 @@
 
 ## When to reach for this
 
-You want automated, repeatable regression signal on every PR — attached to the PR itself as a downloadable artifact, a status check, or a comment. The PR subcommand is designed for this: bounded by `--max-files` / `--max-bytes`, deterministic inputs, and a single Markdown file you can upload.
+You want automated, repeatable regression signal on every PR. Attached to the PR itself as a downloadable artifact, a status check, or a comment. The PR subcommand is designed for this: bounded by `--max-files` / `--max-bytes`, deterministic inputs, and a single Markdown file you can upload.
 
 Reach for this use case when:
 
@@ -18,7 +18,7 @@ Reach for this use case when:
 Do **not** reach for this use case when:
 
 - You run JitCatch only locally and don't want the CI coupling.
-- Your repo can't tolerate cloud LLM calls in CI for compliance reasons — use a self-hosted runner + [07-local-ollama.md](./07-local-ollama.md) instead.
+- Your repo can't tolerate cloud LLM calls in CI for compliance reasons. Use a self-hosted runner + [07-local-ollama.md](./07-local-ollama.md) instead.
 
 ---
 
@@ -105,7 +105,7 @@ jobs:
 
 - `actions/checkout@v4` defaults to shallow depth 1, which breaks `merge-base`. Set `fetch-depth: 0` or fetch the base ref explicitly.
 - `WorktreeSandbox` writes under `.git/worktrees/` inside the runner's workspace. No special FS permissions are required.
-- Generated tests run with the invoking user's privileges. Treat the runner like any other test runner — a compromised PR could ship code that runs at `pytest` time.
+- Generated tests run with the invoking user's privileges. Treat the runner like any other test runner. A compromised PR could ship code that runs at `pytest` time.
 - The `--filename` flag pins the output filename so you can upload and comment on it deterministically.
 
 ---

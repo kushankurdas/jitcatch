@@ -1,4 +1,4 @@
-# Use case 10 — Per-stage model routing (cost vs. quality)
+# Use case 10. Per-stage model routing (cost vs. quality)
 
 **Flags:** `--model`, `--model-risks`, `--model-tests`, `--model-judge`, `--model-review`.
 
@@ -14,7 +14,7 @@ Reach for this use case when:
 - You have a multi-provider contract (Groq + Together + Anthropic, say) and want to route stages by strength.
 - You mix a local Ollama model with a cloud model for the reasoning-heavy stages.
 
-Skip this use case for quick, ad-hoc runs — the defaults are fine.
+Skip this use case for quick, ad-hoc runs. The defaults are fine.
 
 ---
 
@@ -48,7 +48,7 @@ jitcatch pr . \
 
 ### Mix local Ollama + cloud Anthropic
 
-Keep your source off the network for the bulk test-gen stage, but let a cloud frontier model do the reasoning. Because JitCatch binds one client per run, this requires two invocations and a manual merge — useful for forensic deep-dives, not for routine PR runs.
+Keep your source off the network for the bulk test-gen stage, but let a cloud frontier model do the reasoning. Because JitCatch binds one client per run, this requires two invocations and a manual merge. Useful for forensic deep-dives, not for routine PR runs.
 
 ### All-local, tiered by size
 
@@ -99,7 +99,7 @@ jitcatch pr . \
 
 - **Measure before optimizing.** Run one full `--verbose` pass; look in `.jitcatch/logs/` at which stage ate the most tokens. Tune that stage first.
 - **Test-gen is the volume stage 90% of the time.** Dropping `--model-tests` to a cheaper tier is almost always the right first move.
-- **Don't starve the judge.** Judge calls are few but decisive — a bad judge turns every weak catch into noise. Keep `--model-judge` premium.
+- **Don't starve the judge.** Judge calls are few but decisive. A bad judge turns every weak catch into noise. Keep `--model-judge` premium.
 - **Beware chat-completion prompt-caching differences.** Anthropic's prompt caching is client-aware; open-weights endpoints typically do not cache. That changes the economics of re-running the same PR multiple times.
 
 ---

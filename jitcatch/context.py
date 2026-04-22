@@ -6,7 +6,7 @@ The bundle builder assembles a single LLM prompt containing:
 - A list of USAGE-CONTEXT files (callers, not test targets).
 
 Callers are discovered by a best-effort text grep over adapter-registered
-file extensions — no import-graph resolution, no TS paths, no webpack
+file extensions. No import-graph resolution, no TS paths, no webpack
 aliases. That's explicitly out of scope.
 """
 
@@ -242,11 +242,11 @@ def build_bundle(
 ) -> str:
     """Format a single prompt string for a bundle LLM call.
 
-    `files` = [(rel_path, parent_source, diff), ...] — the changed files
+    `files` = [(rel_path, parent_source, diff), ...]. The changed files
     under test. If a parent source exceeds LARGE_FILE_BYTES we only keep
     hunk windows.
 
-    `callers` = [(rel_path, parent_source), ...] — usage context only,
+    `callers` = [(rel_path, parent_source), ...]. Usage context only,
     not to be tested directly. Always hunk-less full source (they're
     bounded by --max-callers + per-file cap upstream).
 

@@ -21,7 +21,7 @@ STRICT_JSON_SUFFIX = (
 
 
 RISK_TAXONOMY_CLAUSE = (
-    "Examine the diff across these risk classes explicitly — do not skip any:\n"
+    "Examine the diff across these risk classes explicitly. Do not skip any:\n"
     "  - security:    auth/authz guards weakened or removed, CORS misconfig, "
     "secrets leakage, env-var defaults flipped (e.g. development -> production), "
     "loosened HTTP status checks (== -> >=, inverting ok/error), catch blocks that "
@@ -37,13 +37,13 @@ RISK_TAXONOMY_CLAUSE = (
     "trailing-token bugs (slice off-by-one in query builders).\n"
     "For each risk return an object: "
     '{"file": str, "line": int|null, "class": one of the classes above, "risk": str}. '
-    "Aim for one entry per independent risk — do not emit multiple entries for the "
+    "Aim for one entry per independent risk. Do not emit multiple entries for the "
     "same underlying issue across call sites."
 )
 
 RISKS_SYSTEM = (
     "You are a senior software engineer reviewing a code change. "
-    "Given a diff, identify risks — concrete ways the change could introduce a bug. "
+    "Given a diff, identify risks. Concrete ways the change could introduce a bug. "
     + RISK_TAXONOMY_CLAUSE
     + " Return a JSON array of such risk objects."
     + STRICT_JSON_SUFFIX
@@ -51,7 +51,7 @@ RISKS_SYSTEM = (
 
 RISKS_SYSTEM_BUNDLE = (
     "You are a senior software engineer reviewing a code change that spans multiple files. "
-    "Given per-file parent sources, diffs, and optional usage-context files, identify risks — "
+    "Given per-file parent sources, diffs, and optional usage-context files, identify risks - "
     "concrete ways the change could introduce a bug, including cross-file inconsistencies. "
     + RISK_TAXONOMY_CLAUSE
     + " Set `file` to the repo-relative path where the risk lives. "
@@ -63,16 +63,16 @@ REAL_SOURCE_CLAUSE = (
     " CRITICAL: Tests MUST exercise the real source by `require()`/`import` of the changed file "
     "at its repo-relative path (e.g. `require('./middleware/authentication')`, "
     "`from app.utils import index`). Do NOT reimplement, paraphrase, or stub the function under "
-    "test inside the test body — a test that defines `parentBehavior()` and `changedBehavior()` "
+    "test inside the test body. A test that defines `parentBehavior()` and `changedBehavior()` "
     "as local functions and asserts on those passes identically on parent and child and is "
     "useless.\n\n"
     "You MAY and SHOULD mock TRANSITIVE dependencies when needed to drive the "
-    "function under test into the failing branch — for example: HTTP clients "
+    "function under test into the failing branch. For example: HTTP clients "
     "(axios / request / node-fetch), JWT libraries (force `jwt.verify` to "
     "throw), DB drivers, SQS clients, filesystem operations. This is required "
     "for middleware, route handlers, and any function whose branch coverage "
     "depends on an external call's outcome. Mocking a dependency of the module "
-    "under test is not the same as stubbing the module under test — the "
+    "under test is not the same as stubbing the module under test. The "
     "distinction is: the function you assert on must be the real one imported "
     "from the changed file.\n\n"
     "For express/connect middleware specifically: build a `req`, `res`, `next` "
@@ -111,7 +111,7 @@ TESTS_SYSTEM_BUNDLE_INTENT = (
     "and diffs) plus optional usage-context files, plus a list of RISKS each prefixed with "
     "`[file:line] (class)`. Generate unit tests that (a) pass on the parent, and (b) exercise "
     "the risks. A test may import/require any listed CHANGED file by its repo-relative path. "
-    "Do not import usage-context files as the subject of assertions — they are there for "
+    "Do not import usage-context files as the subject of assertions. They are there for "
     "comprehension only. For each risk in the input, emit at least one test whose "
     "`target_files` includes the risk's file. If a risk is genuinely untestable in isolation "
     "(e.g. CORS middleware), state the reason in that test's `rationale` and still emit the "
@@ -136,11 +136,11 @@ JUDGE_SYSTEM = (
     "You classify whether a failing test reveals a true bug in a code diff. "
     "Return strict JSON: {\"tp_prob\":float in [-1,1], \"bucket\":\"High\"|\"Medium\"|\"Low\", "
     "\"rationale\":str}. tp_prob=1 means certainly a real bug; -1 means certainly a false positive.\n\n"
-    "CRITICAL — weak-catch semantics: a regression-detection test asserts the "
+    "CRITICAL. Weak-catch semantics: a regression-detection test asserts the "
     "PARENT's observable behavior. It PASSES on parent and FAILS on child by "
-    "design — that is how regressions are detected. Do NOT mark a test as FP "
+    "design. That is how regressions are detected. Do NOT mark a test as FP "
     "merely because it \"asserts what the parent looked like\" or \"encodes the "
-    "old behavior\" — that is the intended pattern. Only mark FP when one of:\n"
+    "old behavior\". That is the intended pattern. Only mark FP when one of:\n"
     "  - the failure is a runtime/import/syntax error unrelated to the behavior\n"
     "    change (ModuleNotFoundError, NameError, ReferenceError);\n"
     "  - the test is non-deterministic (time, random, network, ordering);\n"
@@ -150,7 +150,7 @@ JUDGE_SYSTEM = (
     "  - the behavior change is intentional, documented, and clearly not a bug "
     "(e.g. an added feature, an API version bump).\n"
     "Source-grep tests (read a file, assert a token/operator is present) are "
-    "brittle but still valid TP signal when the diff truly changed that token — "
+    "brittle but still valid TP signal when the diff truly changed that token - "
     "bucket them Medium, do not reject."
     + STRICT_JSON_SUFFIX
 )
@@ -163,9 +163,9 @@ RETRY_SUFFIX = (
 
 REVIEWER_SYSTEM = (
     "You are an aggressive PR reviewer. Your job is to find EVERY plausibly-"
-    "buggy change in the diff — even ones without a failing test. Err on the "
+    "buggy change in the diff. Even ones without a failing test. Err on the "
     "side of flagging. Downstream validation will drop false positives.\n\n"
-    "Examine every hunk across these classes — do not skip any:\n"
+    "Examine every hunk across these classes. Do not skip any:\n"
     "  - security: auth/authz guards weakened or removed, CORS misconfig, "
     "secrets leaked, env-var defaults flipped (dev->prod), loosened HTTP "
     "status checks (==200 -> >=200), catch blocks that silently next()/return "
@@ -192,7 +192,7 @@ REVIEWER_SYSTEM = (
     "  - Title MUST name the symbol and the change ("
     "'isInvalidDate regex accepts month 13', not 'regex changed').\n"
     "  - Rationale must cite the specific old->new token (e.g. '1[0-2] -> 1[0-3]').\n"
-    "  - Include findings even if you're unsure — mark confidence <= 0.5.\n"
+    "  - Include findings even if you're unsure. Mark confidence <= 0.5.\n"
     "Return strict JSON: {\"findings\": [...]}."
     + STRICT_JSON_SUFFIX
 )
@@ -227,7 +227,7 @@ TESTS_SYSTEM_RETRY = (
     "mutation boundary (e.g. regex 1[0-2]->1[0-3]: pass month 13, not month "
     "5). Import the real module.\n"
     "  - parent_failed: test relied on an API/export the parent doesn't have "
-    "— pick assertions on symbols the parent actually exposes.\n"
+    "- pick assertions on symbols the parent actually exposes.\n"
     "  - both_failed: the failure was an import or setup error. Fix "
     "scaffolding (mock transitive deps, not the module under test).\n"
     "Return strict JSON: "
@@ -243,7 +243,7 @@ TESTS_SYSTEM_RETRY = (
 # of <=7B class models once bundled parent sources are appended, producing prose
 # summaries instead of JSON. These preserve schema + a single JSON example and
 # drop the exposition. Large/paid models always use the full prompts via
-# _system_for_label default passthrough — see OpenAICompatClient override.
+# _system_for_label default passthrough. See OpenAICompatClient override.
 RISKS_SYSTEM_BUNDLE_COMPACT = (
     "Find bugs the diff could introduce. Output a JSON array. "
     "Each item: {\"file\": str, \"line\": int|null, \"class\": "
@@ -258,7 +258,7 @@ RISKS_SYSTEM_BUNDLE_COMPACT = (
 
 TESTS_SYSTEM_BUNDLE_INTENT_COMPACT = (
     "Generate unit tests that pass on PARENT code and fail on the diffed child. "
-    "Tests MUST import the real changed module by repo-relative path — do NOT "
+    "Tests MUST import the real changed module by repo-relative path. Do NOT "
     "re-implement the function under test inside the test. Mock transitive deps "
     "(axios, jwt, db) to drive failing branches. For each input RISK emit at "
     "least one test whose target_files includes the risk's file.\n"
@@ -316,7 +316,7 @@ SMALL_MODEL_PREFIXES: Tuple[str, ...] = (
     "llama3.1:8b",
     "llama3.2:1b",
     "llama3.2:3b",
-    "deepseek-coder-v2:16b",  # MoE with 2.4B active — behaves like a small model
+    "deepseek-coder-v2:16b",  # MoE with 2.4B active. Behaves like a small model
     "deepseek-r1:1.5b",
     "deepseek-r1:7b",
     "phi4:mini",
@@ -335,7 +335,7 @@ MODEL_MAX_OUTPUT_TOKENS = {
     "claude-sonnet-4-6": 64000,
     "claude-sonnet-4-5": 64000,
     "claude-haiku-4-5": 64000,
-    # Common Ollama / local-served tags. Conservative output caps — 7B-class
+    # Common Ollama / local-served tags. Conservative output caps. 7B-class
     # models trip their context budget fast. Override with --max-tokens.
     "qwen2.5-coder:3b": 2048,
     "qwen2.5-coder:7b": 4096,
@@ -397,7 +397,7 @@ MODEL_PRICING_USD_PER_M: dict = {
 
 def _stage_of(label: str) -> str:
     """`tests.bundle.intent.retry` -> `tests`. Keeps per-stage buckets
-    small — retry/bundle variants all roll up to their parent stage so
+    small. Retry/bundle variants all roll up to their parent stage so
     cost reporting stays readable at 4 rows."""
     return (label or "unknown").split(".", 1)[0]
 
@@ -413,7 +413,7 @@ def _cost_usd(model: str, in_tok: int, out_tok: int) -> float:
 class UsageStats:
     """Per-run token + cost accounting. Aggregates by stage and by model
     so the footer can show where spend went. Zero cost for local models
-    (Ollama / unpriced tags) — raw tokens still tracked."""
+    (Ollama / unpriced tags). Raw tokens still tracked."""
 
     def __init__(self) -> None:
         self.calls: int = 0
@@ -542,7 +542,7 @@ class LLMClient(ABC):
     ) -> str:
         """Multi-turn conversational completion used by `jitcatch explain`.
         `messages` is a list of {"role": "user"|"assistant", "content": ...}
-        entries — the caller owns history and keeps it across turns. Concrete
+        entries. The caller owns history and keeps it across turns. Concrete
         clients override; default is a no-op for stubs/tests."""
         raise NotImplementedError("chat not implemented for this client")
 
@@ -675,7 +675,7 @@ class AnthropicClient(LLMClient):
 
     def _system_for_label(self, label: str, default: str) -> str:
         """Hook: map a stage label to a system prompt. Base returns the
-        default unchanged — paid Anthropic models always get the full
+        default unchanged. Paid Anthropic models always get the full
         prompts. Subclasses (OpenAICompatClient) may swap to compact
         variants when the target model cannot keep the long prompts in
         its effective attention budget."""
@@ -821,10 +821,10 @@ class AnthropicClient(LLMClient):
         out, _ = self._complete(system, user, label="review.validate")
         verdicts = _parse_validations(out)
         if not verdicts:
-            # Keep all on unparseable — aligns with BugBot's "err on flagging".
+            # Keep all on unparseable. Aligns with BugBot's "err on flagging".
             for f in findings:
                 f.validator_verdict = "keep"
-                f.validator_note = "validator output unparseable — kept by default"
+                f.validator_note = "validator output unparseable. Kept by default"
             return findings
         by_idx = {v["index"]: v for v in verdicts if isinstance(v.get("index"), int)}
         kept: List[ReviewFinding] = []
@@ -832,7 +832,7 @@ class AnthropicClient(LLMClient):
             v = by_idx.get(i)
             if not v:
                 f.validator_verdict = "keep"
-                f.validator_note = "no validator verdict — kept by default"
+                f.validator_note = "no validator verdict. Kept by default"
                 kept.append(f)
                 continue
             verdict = str(v.get("verdict", "keep")).lower()
@@ -965,7 +965,7 @@ class OpenAICompatClient(AnthropicClient):
     """OpenAI-compatible chat-completions client for Ollama, LM Studio,
     vLLM, LocalAI, Groq, OpenRouter, Together, Fireworks, etc. Reuses
     AnthropicClient's higher-level methods (infer_risks, generate_tests,
-    judge, review_diff, validate_findings, retry_tests) — only the
+    judge, review_diff, validate_findings, retry_tests). Only the
     transport in `_complete` differs. Subclassing AnthropicClient is a
     Phase-1 pragmatic shortcut to avoid duplicating ~150 lines; Phase 2
     will extract a shared base."""
@@ -1101,7 +1101,7 @@ class OpenAICompatClient(AnthropicClient):
         )
 
     # Label -> compact system prompt map. Only bundle paths have compact
-    # variants today — single-file paths are shorter and less pressured.
+    # variants today. Single-file paths are shorter and less pressured.
     _COMPACT_SYSTEM_BY_LABEL = {
         "risks.bundle": RISKS_SYSTEM_BUNDLE_COMPACT,
         "tests.bundle.intent": TESTS_SYSTEM_BUNDLE_INTENT_COMPACT,
@@ -1182,7 +1182,7 @@ class OllamaClient(OpenAICompatClient):
 
     The base_url accepts either the Ollama native root
     (`http://localhost:11434`) or the OpenAI-compat root
-    (`http://localhost:11434/v1`) — the trailing `/v1` is stripped."""
+    (`http://localhost:11434/v1`). The trailing `/v1` is stripped."""
 
     def __init__(
         self,
@@ -1236,7 +1236,7 @@ class OllamaClient(OpenAICompatClient):
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         # All jitcatch stages expect JSON output. `format: "json"` forces
-        # the model to emit parseable JSON at sample time — the single
+        # the model to emit parseable JSON at sample time. The single
         # biggest reliability win for small models that otherwise drop to
         # prose summaries.
         body = {
@@ -1518,7 +1518,7 @@ def _extract_first_json_object(text: str) -> Optional[str]:
     """Find the first balanced {...} block in text. Skips over string
     literals so braces inside JSON values don't confuse depth counting.
     Returns None if no opening brace, or if EOF reached with depth>0
-    (truncation — caller should try _recover_truncated_json)."""
+    (truncation. Caller should try _recover_truncated_json)."""
     s = text
     n = len(s)
     i = 0
@@ -1642,10 +1642,10 @@ def _format_risk_entry(obj: Any) -> Optional[str]:
     return f"{head} {risk}".strip() if head else str(risk)
 
 
-# Keys small models commonly pick when they ignore "risks" — all map to
+# Keys small models commonly pick when they ignore "risks". All map to
 # a list of risk-shaped entries. Order matters: prefer the canonical key
 # then deepseek/gemma/etc variants. Never includes keys owned by other
-# parsers (e.g. "tests", "findings") — those have dedicated parse paths
+# parsers (e.g. "tests", "findings"). Those have dedicated parse paths
 # and cross-parser collisions would silently reclassify outputs.
 _RISK_ARRAY_KEYS: Tuple[str, ...] = (
     "risks",
@@ -1735,7 +1735,7 @@ def _parse_tests(text: str) -> List[GeneratedTest]:
         arr = data
     elif isinstance(data, dict):
         # Prefer canonical "tests", then small-model variants. Never cross
-        # into "findings" / "risks" — those collide with other parsers.
+        # into "findings" / "risks". Those collide with other parsers.
         for key in ("tests", "unit_tests", "cases", "testcases", "results"):
             if isinstance(data.get(key), list):
                 arr = data[key]
@@ -1796,7 +1796,7 @@ def _parse_findings(text: str) -> List[ReviewFinding]:
         arr = data
     elif isinstance(data, dict):
         # Small models reach for "issues" or "items" when they ignore
-        # the "findings" instruction. Both are structurally identical —
+        # the "findings" instruction. Both are structurally identical -
         # accept them. Entries still need title|rationale to qualify,
         # so stray risk-shaped arrays won't be reclassified as findings.
         for key in ("findings", "issues", "items", "problems", "bugs"):

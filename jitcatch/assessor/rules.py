@@ -9,7 +9,7 @@ from ..config import CatchCandidate
 FP_REFLECTION_PAT = re.compile(
     r"\b(getattr|hasattr|setattr|inspect\.|__dict__|Object\.getPrototypeOf|Reflect\.)",
 )
-# Mock usage on its own is not a false-positive signal — middleware and
+# Mock usage on its own is not a false-positive signal. Middleware and
 # handler tests legitimately stub transitive deps (axios, jwt, db drivers)
 # to drive the function under test into its failure branch. A test that
 # mocks everything to the point of tautology still passes on both revs

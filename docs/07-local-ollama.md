@@ -1,4 +1,4 @@
-# Use case 07 — Local, private models via Ollama
+# Use case 07. Local, private models via Ollama
 
 **Provider:** `--provider ollama`
 **Default endpoint:** `http://localhost:11434/v1` (overridable via `OLLAMA_BASE_URL`)
@@ -19,7 +19,7 @@ Reach for this use case when:
 
 Do **not** reach for this use case when:
 
-- You need the strongest reasoning available for risk inference or LLM-as-judge — cloud frontier models still edge out most 7B–14B local models. Use [08-anthropic-claude.md](./08-anthropic-claude.md) or [09-openai-compatible-providers.md](./09-openai-compatible-providers.md) for those stages, optionally with a local model for bulk test generation.
+- You need the strongest reasoning available for risk inference or LLM-as-judge. Cloud frontier models still edge out most 7B–14B local models. Use [08-anthropic-claude.md](./08-anthropic-claude.md) or [09-openai-compatible-providers.md](./09-openai-compatible-providers.md) for those stages, optionally with a local model for bulk test generation.
 
 ---
 
@@ -31,16 +31,16 @@ Do **not** reach for this use case when:
    ollama pull qwen2.5-coder:7b
    ```
    Recommended alternates:
-   - `qwen2.5-coder:14b` — stronger reasoning, slower.
-   - `deepseek-coder-v2:16b` — strong on JSON-schema prompts (JitCatch uses the native `/api/chat` endpoint so `format: "json"` is honored; see below).
-   - `llama3.1:8b-instruct-q8_0` — solid generalist baseline.
+   - `qwen2.5-coder:14b`. Stronger reasoning, slower.
+   - `deepseek-coder-v2:16b`. Strong on JSON-schema prompts (JitCatch uses the native `/api/chat` endpoint so `format: "json"` is honored; see below).
+   - `llama3.1:8b-instruct-q8_0`. Solid generalist baseline.
 
 ---
 
 ## Command
 
 ```bash
-# Zero config — picks up localhost:11434, default model qwen2.5-coder:7b.
+# Zero config. Picks up localhost:11434, default model qwen2.5-coder:7b.
 jitcatch pr . --provider ollama
 
 # Explicit model.
@@ -69,7 +69,7 @@ jitcatch pr . --provider ollama --model qwen2.5-coder:14b --llm-timeout 300
 Shape is identical across providers. What changes with a local model is **signal quality**:
 
 - **Risk lists** from smaller models tend to be less specific. Expect more generic "null check missing" entries and fewer with precise `[file:line]` citations.
-- **Generated tests** are often fine — test code is a bulk-output task, which smaller models handle well.
+- **Generated tests** are often fine. Test code is a bulk-output task, which smaller models handle well.
 - **Judge rationales** are noisier. Do not over-index on `tp_prob` from a 7B judge; lean on `rule_flags` and your own reading.
 
 A useful recipe: use a 14B local model for `--model-risks` and `--model-judge`, and the default 7B for `--model-tests`.
@@ -79,7 +79,7 @@ A useful recipe: use a 14B local model for `--model-risks` and `--model-judge`, 
 ## Tips
 
 - **Pull the model before JitCatch runs.** If Ollama has to pull mid-run, the first LLM call will time out. `ollama pull <model>` ahead of time.
-- **Check `ollama ps` if calls hang.** The daemon may be loading the model into VRAM — common on first call after boot.
+- **Check `ollama ps` if calls hang.** The daemon may be loading the model into VRAM. Common on first call after boot.
 - **If you see prose where JSON should be**, you are almost certainly not using JitCatch's native Ollama path. Check that `--provider ollama` is set (not `openai-compat --base-url http://localhost:11434/v1`).
 - **`num_ctx` matters on large bundles.** Some models ship with a small default context window. Use a pulled variant with a larger context, or lower `--max-bytes`.
 

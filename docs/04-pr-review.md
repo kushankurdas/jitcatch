@@ -1,4 +1,4 @@
-# Use case 04 — Pull-request review against a base branch
+# Use case 04. Pull-request review against a base branch
 
 **Subcommand:** `jitcatch pr [--base <ref>]`
 **Rev pair:** `merge-base(base, HEAD)` → `HEAD`
@@ -18,8 +18,8 @@ Reach for this use case when:
 
 Do **not** reach for this use case when:
 
-- You only want the last commit's signal — [`jitcatch last`](./03-last-commit-smoke-test.md) is cheaper.
-- You are still iterating locally and have not pushed — [`jitcatch working`](./02-working-tree-check.md) covers uncommitted state.
+- You only want the last commit's signal - [`jitcatch last`](./03-last-commit-smoke-test.md) is cheaper.
+- You are still iterating locally and have not pushed - [`jitcatch working`](./02-working-tree-check.md) covers uncommitted state.
 
 ---
 
@@ -83,9 +83,9 @@ jitcatch pr . --no-review --no-retry
 
 The Markdown report is organized so the first thing you read is the most actionable:
 
-1. **Test-backed findings (weak catches)** — ranked by `final_score`. Each entry is a self-contained regression claim: test code, parent/child output, rule flags, judge score and rationale, target files.
-2. **Reviewer-only findings** — bugs the reviewer surfaced without a failing test. Opinion-based, validator-filtered. They never outrank test-backed findings.
-3. **Likely false positives** — collapsed at the bottom so the top of the report stays clean.
+1. **Test-backed findings (weak catches)**. Ranked by `final_score`. Each entry is a self-contained regression claim: test code, parent/child output, rule flags, judge score and rationale, target files.
+2. **Reviewer-only findings**. Bugs the reviewer surfaced without a failing test. Opinion-based, validator-filtered. They never outrank test-backed findings.
+3. **Likely false positives**. Collapsed at the bottom so the top of the report stays clean.
 
 For a PR review, scan section 1 and 2 back-to-back: weak catches tell you *what the branch changed*, reviewer findings tell you *what the LLM is worried about anyway*.
 

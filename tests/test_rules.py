@@ -11,7 +11,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from jitcatch.assessor.rules import apply_rules, score_candidate  # noqa: E402
 from jitcatch.config import CatchCandidate, GeneratedTest  # noqa: E402
-from jitcatch.config import TestResult as _TestResult  # noqa: E402 — underscore hides it from pytest collection
+from jitcatch.config import TestResult as _TestResult  # noqa: E402. Underscore hides it from pytest collection
 
 
 def _cand(parent: _TestResult, child: _TestResult, code: str = "expect(1).toBe(1)") -> CatchCandidate:

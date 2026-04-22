@@ -255,7 +255,7 @@ def _make_mock_ollama_client(transport: httpx.MockTransport) -> llm.OllamaClient
 class OllamaClientTransportTest(unittest.TestCase):
     """Locks the Ollama-native transport contract: /api/chat endpoint,
     `format: "json"` (strict JSON mode), and `options.num_ctx` for
-    extended context — all three are what the /v1 shim silently drops."""
+    extended context. All three are what the /v1 shim silently drops."""
 
     def test_posts_api_chat_with_json_mode_and_num_ctx(self) -> None:
         captured: dict = {}
@@ -326,7 +326,7 @@ class OllamaClientTransportTest(unittest.TestCase):
 
     def test_compact_prompt_selected_for_gemma4_e4b(self) -> None:
         """End-to-end: small model over Ollama transport gets the compact
-        bundle prompt delivered to /api/chat — the single behavior fix
+        bundle prompt delivered to /api/chat. The single behavior fix
         that unblocks small models on jitcatch."""
         captured: dict = {}
 
@@ -343,7 +343,7 @@ class OllamaClientTransportTest(unittest.TestCase):
             )
 
         c = _make_mock_ollama_client(httpx.MockTransport(handler))
-        # Exercise the same path cli.cmd_run triggers — the hook picks
+        # Exercise the same path cli.cmd_run triggers. The hook picks
         # compact for small models.
         system = c._system_for_label("risks.bundle", llm.RISKS_SYSTEM_BUNDLE)
         self.assertIs(system, llm.RISKS_SYSTEM_BUNDLE_COMPACT)

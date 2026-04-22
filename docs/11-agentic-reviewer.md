@@ -1,4 +1,4 @@
-# Use case 11 — Agentic reviewer for bugs tests can't reach
+# Use case 11. Agentic reviewer for bugs tests can't reach
 
 **Flags:** `--no-review` (disable), `--skip-validator` (keep every finding), `--model-review <name>`.
 
@@ -6,9 +6,9 @@
 
 ## When to reach for this
 
-Some bugs can't be caught by a generated test. A mock swallows the exception path. An environment variable stubs out the broken branch. The buggy function is never called in any test file. Test-gen fundamentally can't exercise these regressions — the signal lives in the code, not in runtime behavior.
+Some bugs can't be caught by a generated test. A mock swallows the exception path. An environment variable stubs out the broken branch. The buggy function is never called in any test file. Test-gen fundamentally can't exercise these regressions. The signal lives in the code, not in runtime behavior.
 
-JitCatch's **agentic reviewer** reads the diff bundle and flags suspected bugs via LLM reasoning. A second LLM pass — the **validator** — drops obvious false positives or downgrades their confidence. Findings are written to a separate section of the report so they never outrank test-backed weak catches.
+JitCatch's **agentic reviewer** reads the diff bundle and flags suspected bugs via LLM reasoning. A second LLM pass. The **validator**. Drops obvious false positives or downgrades their confidence. Findings are written to a separate section of the report so they never outrank test-backed weak catches.
 
 Reach for this use case when:
 
@@ -23,7 +23,7 @@ Reach for this use case when:
 The reviewer runs by default on every subcommand. You only touch these flags to turn it off, tune it, or keep raw output:
 
 ```bash
-# Default — reviewer on, validator on.
+# Default. Reviewer on, validator on.
 jitcatch pr .
 
 # Disable the reviewer entirely (faster, cheaper).
@@ -52,7 +52,7 @@ jitcatch pr . --model-review claude-sonnet-4-6
    ```
 3. Unless `--skip-validator` is set, a second LLM pass classifies each finding as `keep | drop | downgrade` and writes `validator_verdict` + `validator_note`.
 4. Only `keep` and `downgrade` findings land in the report. `drop` findings are discarded silently.
-5. Reviewer output is written to a dedicated Markdown section — **below** the test-backed findings and **never ranked against them**.
+5. Reviewer output is written to a dedicated Markdown section - **below** the test-backed findings and **never ranked against them**.
 
 ---
 
@@ -60,15 +60,15 @@ jitcatch pr . --model-review claude-sonnet-4-6
 
 Markdown structure, in the order you read it:
 
-1. **Test-backed findings (weak catches)** — parent-passes-child-fails evidence.
-2. **Reviewer-only findings** — validator-filtered. Each entry includes: file + line, severity, category, rationale, confidence, validator note.
-3. **Likely false positives** — collapsed at the bottom.
+1. **Test-backed findings (weak catches)**. Parent-passes-child-fails evidence.
+2. **Reviewer-only findings**. Validator-filtered. Each entry includes: file + line, severity, category, rationale, confidence, validator note.
+3. **Likely false positives**. Collapsed at the bottom.
 
 Cross-reference the two sections:
 
 - A reviewer finding *with* a corresponding weak catch is a high-confidence bug.
 - A reviewer finding *without* a corresponding weak catch is the whole reason the reviewer exists: a bug test-gen could not demonstrate.
-- A weak catch *without* a corresponding reviewer finding is common — the reviewer tends to flag structural issues; test-gen reaches behavior shifts.
+- A weak catch *without* a corresponding reviewer finding is common. The reviewer tends to flag structural issues; test-gen reaches behavior shifts.
 
 ---
 
@@ -76,7 +76,7 @@ Cross-reference the two sections:
 
 - **Keep the reviewer on for PR runs.** The marginal cost is low (one or two LLM calls per adapter group) and the marginal signal is high.
 - **Use `--skip-validator` only when debugging the reviewer itself.** Without the validator, expect a noticeable FP rate on diffs that look "risky" stylistically but are fine semantically.
-- **`--model-review` defaults to `--model`.** If you are on Anthropic with default routing, that is Sonnet, which is the right tier for this stage. Do not downgrade `--model-review` to Haiku — validator quality drops fast.
+- **`--model-review` defaults to `--model`.** If you are on Anthropic with default routing, that is Sonnet, which is the right tier for this stage. Do not downgrade `--model-review` to Haiku. Validator quality drops fast.
 - **Disable when the diff is trivial.** A one-line typo fix does not need a reviewer pass; `--no-review` saves a few seconds.
 
 ---

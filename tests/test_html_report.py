@@ -44,7 +44,7 @@ class WriteHtmlTest(unittest.TestCase):
             # Inlined style block.
             self.assertIn("<style>", content)
             self.assertIn("</style>", content)
-            # No CDN / external fetches — no <link rel="stylesheet"> and no
+            # No CDN / external fetches. No <link rel="stylesheet"> and no
             # http(s) URLs to css/js assets.
             self.assertNotIn("rel=\"stylesheet\"", content)
             self.assertNotIn("<script", content)
@@ -133,7 +133,7 @@ class WriteHtmlTest(unittest.TestCase):
 
 class UsageRenderTest(unittest.TestCase):
     """Token/cost from UsageStats should surface in human-readable
-    reports — the CLI stderr footer is ephemeral; shareable reports
+    reports. The CLI stderr footer is ephemeral; shareable reports
     need the numbers inline."""
 
     def _stub_usage(self):
@@ -192,7 +192,7 @@ class FormatFlagTest(unittest.TestCase):
         self.assertEqual(self._parse("all"), {"html", "md"})
 
     def test_json_is_noop(self) -> None:
-        # JSON always written — flag value accepted but ignored in the set.
+        # JSON always written. Flag value accepted but ignored in the set.
         self.assertEqual(self._parse("json"), set())
         self.assertEqual(self._parse("html,json"), {"html"})
 

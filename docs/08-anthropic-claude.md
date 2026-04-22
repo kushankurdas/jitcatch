@@ -1,4 +1,4 @@
-# Use case 08 — Cloud inference via Anthropic Claude
+# Use case 08. Cloud inference via Anthropic Claude
 
 **Provider:** `--provider anthropic`
 **Auth:** `ANTHROPIC_API_KEY` environment variable.
@@ -8,7 +8,7 @@
 
 ## When to reach for this
 
-You want the strongest out-of-the-box signal JitCatch can produce. Claude is the default cloud provider and the only one with its own dedicated client in the JitCatch codebase. When `ANTHROPIC_API_KEY` is set, `--provider auto` resolves to Anthropic automatically — no additional flags needed.
+You want the strongest out-of-the-box signal JitCatch can produce. Claude is the default cloud provider and the only one with its own dedicated client in the JitCatch codebase. When `ANTHROPIC_API_KEY` is set, `--provider auto` resolves to Anthropic automatically. No additional flags needed.
 
 Reach for this use case when:
 
@@ -18,8 +18,8 @@ Reach for this use case when:
 
 Do **not** reach for this use case when:
 
-- Your codebase cannot leave your machine — use [07-local-ollama.md](./07-local-ollama.md) instead.
-- You want to split spend across multiple providers — use [09-openai-compatible-providers.md](./09-openai-compatible-providers.md).
+- Your codebase cannot leave your machine. Use [07-local-ollama.md](./07-local-ollama.md) instead.
+- You want to split spend across multiple providers. Use [09-openai-compatible-providers.md](./09-openai-compatible-providers.md).
 
 ---
 
@@ -62,7 +62,7 @@ jitcatch pr . \
 - `_make_llm` constructs an `AnthropicClient` pinned to the configured model and per-stage overrides.
 - `--max-tokens` defaults to the model's output ceiling (see the top-level README for current ceilings). Lower it to cap spend at the risk of `truncated (max_tokens)` in stderr.
 - All four stages (`risks`, `tests`, `judge`, `review`) route through the same client with per-stage model selection.
-- Per-call transcripts are written to `.jitcatch/logs/` under `--verbose` or `--log-dir`. These are untruncated — convenient for debugging, spendy to keep around.
+- Per-call transcripts are written to `.jitcatch/logs/` under `--verbose` or `--log-dir`. These are untruncated. Convenient for debugging, spendy to keep around.
 
 ---
 
@@ -74,7 +74,7 @@ Same artifacts as other providers. What changes with Claude:
 - **Generated tests** are high-quality, which increases the odds that a weak catch reflects a real regression.
 - **Judge rationales** are specific enough to paste into a PR comment.
 
-Expect to triage fewer false positives with Claude than with a small local model, but watch the `rule_flags` anyway — deterministic signals catch cases LLMs rationalize away.
+Expect to triage fewer false positives with Claude than with a small local model, but watch the `rule_flags` anyway. Deterministic signals catch cases LLMs rationalize away.
 
 ---
 

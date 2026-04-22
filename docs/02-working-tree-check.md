@@ -1,4 +1,4 @@
-# Use case 02 — Working-tree check (staged + unstaged)
+# Use case 02. Working-tree check (staged + unstaged)
 
 **Subcommand:** `jitcatch working`
 **Rev pair:** `HEAD` → synthetic commit combining `git diff --cached` **and** `git diff` (unstaged)
@@ -13,7 +13,7 @@ You are mid-edit. You have not yet run `git add`. You want a regression signal o
 Reach for this use case when:
 
 - You are iterating quickly and want a check against all pending edits, staged or not.
-- You want to decide *how to split* your work into commits — JitCatch's ranking highlights which edits changed observable behavior and which were inert.
+- You want to decide *how to split* your work into commits. JitCatch's ranking highlights which edits changed observable behavior and which were inert.
 - You have a hunch that an "innocuous" refactor touched something it should not have.
 
 Use [`jitcatch staged`](./01-pre-commit-check.md) instead when you have already curated the index with `git add -p` and only want to check the commit you are about to create.
@@ -37,14 +37,14 @@ jitcatch working .
 Useful variants:
 
 ```bash
-# Include callers of changed symbols in the bundle — helps when a function
+# Include callers of changed symbols in the bundle. Helps when a function
 # changed signature and its callers have subtle call-site expectations.
 jitcatch working . --with-callers
 
 # Trim to the churn-heaviest files only. Good for large, messy branches.
 jitcatch working . --max-files 10
 
-# Offline rehearsal — confirms the pipeline runs end to end without any LLM.
+# Offline rehearsal. Confirms the pipeline runs end to end without any LLM.
 jitcatch working . --stub
 ```
 
@@ -57,7 +57,7 @@ jitcatch working . --stub
 3. The scratch commit's SHA becomes the *child rev*. Your index and working tree are **never touched**.
 4. From that point on, the pipeline is identical to `staged`: bundle, workflows, worktree eval, rule assessor, LLM judge, retry.
 
-The ordering — staged then unstaged — matters only when the two overlap. For the common case (disjoint edits) ordering is irrelevant.
+The ordering. Staged then unstaged. Matters only when the two overlap. For the common case (disjoint edits) ordering is irrelevant.
 
 ---
 
@@ -66,10 +66,10 @@ The ordering — staged then unstaged — matters only when the two overlap. For
 Identical shape to [`jitcatch staged`](./01-pre-commit-check.md). Two artifacts per run under `.jitcatch/output/`:
 
 - A **test-backed findings** section ranked by `final_score`.
-- A **reviewer-only findings** section (validator-filtered, opinion-based — see [11-agentic-reviewer.md](./11-agentic-reviewer.md)).
+- A **reviewer-only findings** section (validator-filtered, opinion-based. See [11-agentic-reviewer.md](./11-agentic-reviewer.md)).
 - A **likely false positives** collapsed at the bottom.
 
-A weak catch here is especially actionable: the test exists, it currently fails against your uncommitted state, and it will keep failing until you either fix the regression or decide the behavior change was intentional — in which case keep the generated test as a characterization test for the new behavior.
+A weak catch here is especially actionable: the test exists, it currently fails against your uncommitted state, and it will keep failing until you either fix the regression or decide the behavior change was intentional. In which case keep the generated test as a characterization test for the new behavior.
 
 ---
 

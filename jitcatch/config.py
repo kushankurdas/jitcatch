@@ -7,7 +7,7 @@ from typing import List, Optional
 @dataclass
 class ReviewFinding:
     """Agentic-reviewer output: a suspected bug in a diff surfaced by LLM
-    reasoning without a failing test. Parallel channel to CatchCandidate —
+    reasoning without a failing test. Parallel channel to CatchCandidate -
     used when the change is obviously wrong but test-gen can't exercise
     the regression (mocks, env vars, untested symbols)."""
     file: str

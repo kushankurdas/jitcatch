@@ -75,7 +75,7 @@ class PRModeTest(unittest.TestCase):
         self.repo.mkdir(parents=True)
         _git(self.repo, "init", "-q", "-b", "main")
         _git(self.repo, "config", "commit.gpgsign", "false")
-        # CJS repo — no "type": "module" in package.json
+        # CJS repo. No "type": "module" in package.json
         (self.repo / "package.json").write_text('{"name":"pr-fixture","version":"0.0.0"}\n')
         (self.repo / ".jitcatch_stub.json").write_text(json.dumps(STUB, indent=2))
         (self.repo / "a.js").write_text(A_PARENT)

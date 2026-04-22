@@ -48,7 +48,7 @@ def main(argv: List[str] | None = None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="jitcatch",
-        description="JitCatch — free, local-first regression-catcher. "
+        description="JitCatch. Free, local-first regression-catcher. "
                     "Generates unit tests from a diff and runs them against "
                     "the parent and child revs in isolated git worktrees.",
     )
@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-callers", type=int, default=5)
     _add_shared_args(r)
 
-    # auto-rev bundle subcommands — same pipeline, different rev selection
+    # auto-rev bundle subcommands. Same pipeline, different rev selection
     for name, help_text in (
         ("last", "smoke-test HEAD~1..HEAD"),
         ("pr", "PR vs base branch (autodetects origin/HEAD; pass --base to override)"),
@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--max-bytes", type=int, default=context.MAX_BYTES_DEFAULT)
         _add_shared_args(s)
 
-    # explain — read the latest report, print the candidate detail, then drop
+    # explain. Read the latest report, print the candidate detail, then drop
     # into an interactive LLM chat about that candidate. Non-TTY stdin (pipes,
     # redirected input, CI) skips the chat loop and falls back to the plain
     # detail dump so explain stays scriptable.
@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument(
         "--no-chat",
         action="store_true",
-        help="print the candidate detail and exit — skip the chat REPL.",
+        help="print the candidate detail and exit. Skip the chat REPL.",
     )
     _add_llm_args(e)
 
@@ -112,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_llm_args(p: argparse.ArgumentParser) -> None:
     """LLM provider args needed by any subcommand that calls into an LLM.
-    Subset of `_add_shared_args` — no generation/retry/report knobs."""
+    Subset of `_add_shared_args`. No generation/retry/report knobs."""
     p.add_argument("--stub", action="store_true", help="use StubClient (no API calls)")
     p.add_argument(
         "--provider",
@@ -149,7 +149,7 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
         help="LLM provider. 'auto' picks 'anthropic' when ANTHROPIC_API_KEY "
              "is set, else 'ollama' (http://localhost:11434/v1). "
              "'openai-compat' accepts any chat-completions endpoint (LM Studio, "
-             "vLLM, LocalAI, Groq, OpenRouter, Together, Fireworks, ...) — "
+             "vLLM, LocalAI, Groq, OpenRouter, Together, Fireworks, ...) - "
              "pair with --base-url.",
     )
     p.add_argument(
@@ -301,7 +301,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
         print(f"error: no candidate matching id prefix '{wanted}' in {report_path}", file=sys.stderr)
         return 1
     if len(matches) > 1:
-        print(f"error: id prefix '{wanted}' is ambiguous — {len(matches)} matches:", file=sys.stderr)
+        print(f"error: id prefix '{wanted}' is ambiguous - {len(matches)} matches:", file=sys.stderr)
         for c in matches:
             print(f"  {c.get('id')}  {c.get('test', {}).get('name')}", file=sys.stderr)
         return 1
@@ -311,7 +311,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
     if getattr(args, "no_chat", False):
         print(_format_explain(cand, report_path))
         return 0
-    # Skip the REPL when stdin isn't a tty (pipes, redirected input, CI) —
+    # Skip the REPL when stdin isn't a tty (pipes, redirected input, CI) -
     # keeps explain scriptable and avoids spinning up an LLM client for
     # no reason. Fall back to the plain detail dump in that case.
     if not sys.stdin.isatty():
@@ -322,7 +322,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
 
 class _Style:
     """ANSI styling helper. Colors only when stdout is a TTY and NO_COLOR
-    isn't set — keeps piped/CI output clean."""
+    isn't set. Keeps piped/CI output clean."""
 
     def __init__(self, enabled: bool) -> None:
         self.on = enabled
@@ -422,7 +422,7 @@ def _explain_system_prompt(cand: dict, meta: dict) -> str:
     context_lines = [
         "You are a senior engineer helping the user understand a jitcatch "
         "regression-test candidate. Ground every answer in the JSON context "
-        "below. If the data doesn't contain the answer, say so — don't "
+        "below. If the data doesn't contain the answer, say so. Don't "
         "speculate about code you haven't been shown. Be concise.",
         "",
         "--- RUN META ---",
@@ -465,7 +465,7 @@ def _resolve_explain_report(args: argparse.Namespace, repo: Path) -> Optional[Pa
     out_dir = repo / ".jitcatch" / "output"
     if not out_dir.exists():
         return None
-    # Pick the newest jitcatch-*.json by mtime — matches the default
+    # Pick the newest jitcatch-*.json by mtime. Matches the default
     # naming scheme from `_resolve_output_paths`.
     candidates = sorted(
         out_dir.glob("jitcatch-*.json"),
@@ -477,8 +477,8 @@ def _resolve_explain_report(args: argparse.Namespace, repo: Path) -> Optional[Pa
 
 def _format_explain(cand: dict, report_path: Path) -> str:
     """Render a single candidate as a human-readable block. Pulls every
-    field the report persists — test code, parent/child output, judge
-    rationale, rule flags, risks — so the reader has everything needed
+    field the report persists. Test code, parent/child output, judge
+    rationale, rule flags, risks. So the reader has everything needed
     to decide on the finding without another tool."""
     test = cand.get("test") or {}
     parent = cand.get("parent_result") or {}
@@ -632,7 +632,7 @@ def _make_llm(args: argparse.Namespace, repo: Path) -> LLMClient:
         # both, which is what caused deepseek-coder-v2:16b to produce
         # prose summaries instead of the required JSON schemas. The
         # generic openai-compat path (Groq / Together / vLLM) keeps the
-        # /v1 chat-completions transport — those providers often reject
+        # /v1 chat-completions transport. Those providers often reject
         # Ollama-specific fields.
         client_cls = OllamaClient if provider == "ollama" else OpenAICompatClient
         return client_cls(
@@ -709,7 +709,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     meta = _build_meta(args, repo, parent_rev, child_rev)
     file_diffs = {args.file: diff_text}
-    # Single-file "bundle" for reviewer + retry — same shape as bundle
+    # Single-file "bundle" for reviewer + retry. Same shape as bundle
     # workflow, just with one file.
     review_bundle = context.build_bundle(
         [(args.file, parent_source, diff_text)], [], max_bytes=context.MAX_BYTES_DEFAULT
@@ -1013,7 +1013,7 @@ def _evaluate_and_report(
 
     candidates: List[CatchCandidate] = []
     # Per-group lists to drive retry-loop gap detection independently per
-    # language group — a gap in the JS group shouldn't trigger a retry
+    # language group. A gap in the JS group shouldn't trigger a retry
     # against Python context.
     group_cands: Dict[int, List[CatchCandidate]] = {g[0]: [] for g in groups}
 
@@ -1031,7 +1031,7 @@ def _evaluate_and_report(
         _emit_empty_report(args, meta)
         return 0
 
-    # Agentic reviewer — runs independently of test-gen. Happens before the
+    # Agentic reviewer. Runs independently of test-gen. Happens before the
     # sandbox is created so we can short-circuit when test-gen was empty.
     if run_review:
         for gkey, _tests, _parent, _diff in groups:
@@ -1134,7 +1134,7 @@ def _evaluate_and_report(
         print(f"Markdown:    {md_path}")
     if "html" in fmts:
         print(f"HTML:        {html_path}")
-    # LLM call stats — surfaces truncation fast.
+    # LLM call stats. Surfaces truncation fast.
     total = getattr(llm, "total_calls", None)
     trunc = getattr(llm, "truncated_calls", None)
     if total is not None:

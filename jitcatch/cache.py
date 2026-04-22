@@ -1,10 +1,10 @@
 """Risk-inference cache. Skips the LLM risks call when the same bundle
-has been analyzed recently — risks are a pure function of (bundle, lang,
+has been analyzed recently. Risks are a pure function of (bundle, lang,
 risks-stage model, prompt version), so hits are safe.
 
 On-disk layout: `<repo>/.jitcatch/cache/risks/<key>.json`. Each file is
 self-describing so a human can inspect / delete entries directly. TTL
-is enforced on read, not on write — stale entries linger until purged
+is enforced on read, not on write. Stale entries linger until purged
 explicitly (`--clear-cache`) or overwritten."""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-# Use case 05 — Single-file review with explicit revs
+# Use case 05. Single-file review with explicit revs
 
 **Subcommand:** `jitcatch run --file <path> [--parent <rev>] [--child <rev>]`
 **Rev pair:** whatever you pass.
@@ -8,7 +8,7 @@
 
 ## When to reach for this
 
-You want to ask JitCatch a very specific question: *did `<file>` behave differently between `<revA>` and `<revB>`?* This is the escape hatch below the bundle-based subcommands — it targets one file, does not autodetect revs, and skips the adapter-group aggregation. Use it for forensics, bisects, and API-stability checks.
+You want to ask JitCatch a very specific question: *did `<file>` behave differently between `<revA>` and `<revB>`?* This is the escape hatch below the bundle-based subcommands. It targets one file, does not autodetect revs, and skips the adapter-group aggregation. Use it for forensics, bisects, and API-stability checks.
 
 Reach for this use case when:
 
@@ -19,7 +19,7 @@ Reach for this use case when:
 
 Do **not** reach for this use case when:
 
-- You want the multi-file, multi-language bundle pipeline — use one of `last`, `pr`, `staged`, `working`.
+- You want the multi-file, multi-language bundle pipeline. Use one of `last`, `pr`, `staged`, `working`.
 - You want JitCatch to pick files for you by churn.
 
 ---
@@ -65,7 +65,7 @@ All the shared flags (`--workflow`, `--provider`, `--model`, `--max-tokens`, `--
 
 Same artifacts, smaller scope. Every weak catch here is about one file, so `target_files` is always `[--file]`. The reviewer section is typically terse because the bundle is tiny.
 
-This mode is where **judge rationale** is most valuable — with a tightly scoped diff, the LLM-as-judge has enough surface area to write a specific rationale you can cite in a bug report or a commit message.
+This mode is where **judge rationale** is most valuable. With a tightly scoped diff, the LLM-as-judge has enough surface area to write a specific rationale you can cite in a bug report or a commit message.
 
 ---
 
@@ -82,5 +82,5 @@ This mode is where **judge rationale** is most valuable — with a tightly scope
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `error: <file> is empty or missing at parent <rev>` | The file did not exist at `<parent>`. | Pick a `<parent>` where the file existed, or test against a later baseline. |
-| `warning: no diff for <file> between ...` | The file is unchanged between the two revs. | Nothing to do — pipeline still runs but no test-gen signal is expected. |
-| `ValueError: no adapter for <file>` | Extension is not Python or JavaScript. | Not supported yet — see the README for how to add a language adapter. |
+| `warning: no diff for <file> between ...` | The file is unchanged between the two revs. | Nothing to do - pipeline still runs but no test-gen signal is expected. |
+| `ValueError: no adapter for <file>` | Extension is not Python or JavaScript. | Not supported yet - see the README for how to add a language adapter. |

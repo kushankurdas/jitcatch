@@ -1,8 +1,8 @@
-# JitCatch — Use Case Documentation
+# JitCatch. Use Case Documentation
 
 This directory contains one document per use case. Each file is self-contained: **when to use it**, **the exact command**, **what happens under the hood**, **what the output means**, and **common pitfalls**.
 
-Start with the use case that matches your workflow — you do not need to read them in order.
+Start with the use case that matches your workflow. You do not need to read them in order.
 
 ## Index
 
@@ -45,11 +45,11 @@ Start with the use case that matches your workflow — you do not need to read t
 
 These terms appear in most files; they are defined once here so individual use cases can stay short.
 
-- **Parent rev / Child rev.** The two git SHAs JitCatch compares. A test that **passes on parent** and **fails on child** is a *weak catch* — executable evidence that the diff changed behavior.
+- **Parent rev / Child rev.** The two git SHAs JitCatch compares. A test that **passes on parent** and **fails on child** is a *weak catch*. Executable evidence that the diff changed behavior.
 - **Weak catch.** The core invariant of the tool. Every ranking signal (rule flags, LLM-as-judge, `final_score`) is built on top of this pass/fail pair.
 - **WorktreeSandbox.** JitCatch runs each generated test inside a detached `git worktree` for the parent and another for the child. Your working tree and index are never mutated.
 - **Bundle.** A single prompt assembled from all changed files that share a language adapter (Python, JavaScript). Capped by `--max-bytes` and `--max-files`.
 - **Workflows.** Two test-gen strategies run by default: `intent` (risks-first) and `dodgy` (mutation-mindset). Pick one with `--workflow`.
-- **Output.** Two files per run under `<repo>/.jitcatch/output/` — one JSON, one Markdown. Weak catches are ranked first; reviewer-only findings appear in their own section.
+- **Output.** Two files per run under `<repo>/.jitcatch/output/`. One JSON, one Markdown. Weak catches are ranked first; reviewer-only findings appear in their own section.
 
 See the [top-level README](../README.md) for the full CLI reference, architecture diagram, and threat model.

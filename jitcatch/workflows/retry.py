@@ -47,7 +47,7 @@ def _failure_mode(cand: CatchCandidate) -> str:
 def _best_candidate_for_risk(
     risk_key: str, risk: str, candidates: List[CatchCandidate]
 ) -> Optional[CatchCandidate]:
-    """Pick the candidate most likely aimed at this risk — highest token
+    """Pick the candidate most likely aimed at this risk. Highest token
     overlap between the risk body and the test name + rationale."""
     r_tokens = _tokens(risk)
     best: Optional[Tuple[int, CatchCandidate]] = None

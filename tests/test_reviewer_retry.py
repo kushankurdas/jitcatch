@@ -344,7 +344,7 @@ class ReportSortingTest(unittest.TestCase):
             body = out.read_text()
             self.assertIn("Likely false positives (1)", body)
             fp_section_start = body.index("Likely false positives")
-            # Titles also appear in the Overview table at the top — assert on
+            # Titles also appear in the Overview table at the top. Assert on
             # the per-finding heading (`### N. <title>`) so we're checking
             # which section the group renders in, not where it's indexed.
             self.assertLess(body.index("### 1. real bug"), fp_section_start)

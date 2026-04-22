@@ -1,7 +1,7 @@
-# Use case 06 — Offline dry run with the stub client
+# Use case 06. Offline dry run with the stub client
 
 **Flag:** `--stub`
-**Provider:** `StubClient` — deterministic, no network, no API keys.
+**Provider:** `StubClient`. Deterministic, no network, no API keys.
 
 ---
 
@@ -18,7 +18,7 @@ Reach for this use case when:
 
 Do **not** reach for this use case when:
 
-- You want real regression signal. Stub responses are *shape-correct* but *content-free* — they don't reason about your diff.
+- You want real regression signal. Stub responses are *shape-correct* but *content-free*. They don't reason about your diff.
 
 ---
 
@@ -48,7 +48,7 @@ jitcatch run     . --file src/foo.py --stub
 - `StubClient` implements the same interface (`chat`, `chat_stage`, `total_calls`, `truncated_calls`) as the real provider clients.
 - Every stage (`risks`, `tests`, `judge`, `review`) receives a canned response sufficient to continue the pipeline. Generated tests are valid for the target adapter but do not exercise the diff meaningfully.
 
-This is **not** a mock with mutable behavior. It is a fixed stub. Its value is that the **pipeline itself** runs — worktrees are created, tests are executed, rule assessor runs, reports are written — with no external dependency.
+This is **not** a mock with mutable behavior. It is a fixed stub. Its value is that the **pipeline itself** runs. Worktrees are created, tests are executed, rule assessor runs, reports are written. With no external dependency.
 
 ---
 

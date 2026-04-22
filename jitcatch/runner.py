@@ -83,7 +83,7 @@ def rerun_child(
     """Re-run the child-worktree test `n` times against the existing
     artifact. Used by the runtime flake detector: a test that fails on
     one run but passes on another is non-deterministic and should be
-    flagged `fp:flake_runtime` — not a real regression catch."""
+    flagged `fp:flake_runtime`. Not a real regression catch."""
     assert sandbox.child_root is not None
     results: list[TestResult] = []
     for _ in range(max(0, n)):
@@ -100,7 +100,7 @@ def evaluate_test(
     """Write generated test into parent & child worktrees, run both in
     parallel. Return (parent, child, artifact). Parent and child subprocesses
     execute in separate worktree directories, so there is no shared filesystem
-    state between them — running both concurrently halves wall-clock time
+    state between them. Running both concurrently halves wall-clock time
     on tests where both revs take non-trivial time to execute."""
     assert sandbox.parent_root is not None
     assert sandbox.child_root is not None

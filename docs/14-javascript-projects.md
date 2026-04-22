@@ -1,4 +1,4 @@
-# Use case 14 — JavaScript projects (ESM and CommonJS)
+# Use case 14. JavaScript projects (ESM and CommonJS)
 
 **Adapter:** `jitcatch.adapters.javascript`
 **Extensions:** `.js`, `.mjs`, `.cjs`
@@ -21,13 +21,13 @@ Reach for this use case when:
 ## Prerequisites
 
 - **Node.js ≥ 18.** `node --test` landed in 18. Older versions will fail at test execution time.
-- A clean `package.json` if your project uses ESM — JitCatch reads the `"type"` field to decide ESM vs CommonJS per file.
+- A clean `package.json` if your project uses ESM. JitCatch reads the `"type"` field to decide ESM vs CommonJS per file.
 
 ---
 
 ## Command
 
-No special flags — the adapter is picked up automatically from file extensions. Every JitCatch subcommand supports JavaScript:
+No special flags. The adapter is picked up automatically from file extensions. Every JitCatch subcommand supports JavaScript:
 
 ```bash
 jitcatch pr .
@@ -72,9 +72,9 @@ This makes generated tests consistent with the target file's module system, so i
 
 Identical to Python runs:
 
-- **Test-backed findings** — `node --test` passed on parent, failed on child. The rendered Markdown includes the test code and parent/child stdout from `node --test`'s TAP-ish output.
-- **Reviewer-only findings** — diff-level reasoning the reviewer surfaced.
-- **Likely false positives** — collapsed at the bottom.
+- **Test-backed findings** - `node --test` passed on parent, failed on child. The rendered Markdown includes the test code and parent/child stdout from `node --test`'s TAP-ish output.
+- **Reviewer-only findings**. Diff-level reasoning the reviewer surfaced.
+- **Likely false positives**. Collapsed at the bottom.
 
 `rule_flags` and `judge_tp_prob` behave identically; the `fp:flakiness` flag is particularly relevant on JavaScript tests with timer-based assertions.
 
@@ -83,9 +83,9 @@ Identical to Python runs:
 ## Tips
 
 - **Keep generated tests close to the target.** The default layout places `.jitcatch.test.*` next to the source file so ESM resolvers and path aliases behave the same as in hand-written tests.
-- **Node-only APIs only.** Generated tests use `node:test`, `node:assert`, and standard-library modules. They do not assume Jest, Vitest, Mocha, or Chai — your project does not need those to be installed.
+- **Node-only APIs only.** Generated tests use `node:test`, `node:assert`, and standard-library modules. They do not assume Jest, Vitest, Mocha, or Chai. Your project does not need those to be installed.
 - **Compilers and transpilers are out of scope.** JitCatch does not run a TypeScript compiler. A `.ts` file will not be picked up by the JavaScript adapter. For TypeScript-heavy repos, wait on a dedicated adapter or compile to `.js` before running JitCatch.
-- **Multi-language PRs.** A PR that touches Python and JavaScript runs both workflows in parallel per adapter group — you get one report covering both.
+- **Multi-language PRs.** A PR that touches Python and JavaScript runs both workflows in parallel per adapter group. You get one report covering both.
 
 ---
 
@@ -94,7 +94,7 @@ Identical to Python runs:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `node: unknown option --test` | Node version < 18. | Upgrade Node; JitCatch documents 18+. |
-| ESM test fails with `require is not defined` | Target is ESM (`.mjs` or `package.json`'s `"type":"module"`) but the generated test uses `require`. | Usually a prompt issue — rerun; if persistent, raise `--model-tests`. |
-| CJS test fails with `Cannot use import statement outside a module` | Target is CommonJS but the generated test uses `import`. | Same as above — swap to a stronger test-gen model. |
+| ESM test fails with `require is not defined` | Target is ESM (`.mjs` or `package.json`'s `"type":"module"`) but the generated test uses `require`. | Usually a prompt issue - rerun; if persistent, raise `--model-tests`. |
+| CJS test fails with `Cannot use import statement outside a module` | Target is CommonJS but the generated test uses `import`. | Same as above - swap to a stronger test-gen model. |
 | `ValueError: no adapter for <file>` | File extension isn't `.js`, `.mjs`, `.cjs`. | Either add a custom adapter (see README) or exclude the file from the PR scope. |
 | Tests flake on timers | `node --test` doesn't have deterministic fake timers by default. | Treat `fp:flakiness` rule flags as accurate; accept that time-coupled code is hard to test-gen. |

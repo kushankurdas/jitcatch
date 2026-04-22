@@ -1,4 +1,4 @@
-# Use case 01 — Pre-commit check
+# Use case 01. Pre-commit check
 
 **Subcommand:** `jitcatch staged`
 **Rev pair:** `HEAD` → synthetic commit of `git diff --cached`
@@ -18,8 +18,8 @@ Reach for this use case when:
 
 Do **not** reach for this use case when:
 
-- You have unstaged edits you also want checked — use [`jitcatch working`](./02-working-tree-check.md) instead.
-- You want to re-check a commit that already exists — use [`jitcatch last`](./03-last-commit-smoke-test.md).
+- You have unstaged edits you also want checked. Use [`jitcatch working`](./02-working-tree-check.md) instead.
+- You want to re-check a commit that already exists. Use [`jitcatch last`](./03-last-commit-smoke-test.md).
 
 ---
 
@@ -42,13 +42,13 @@ That is the whole command. Sensible defaults take over from there: `--workflow b
 Common refinements:
 
 ```bash
-# Fast check — skip the reviewer and retries, keep just the weak-catch signal.
+# Fast check. Skip the reviewer and retries, keep just the weak-catch signal.
 jitcatch staged . --no-review --no-retry
 
-# Deeper check — force both workflows and do not skip anything (this is the default).
+# Deeper check. Force both workflows and do not skip anything (this is the default).
 jitcatch staged .
 
-# Offline smoke test — no network, no API keys.
+# Offline smoke test. No network, no API keys.
 jitcatch staged . --stub
 ```
 
@@ -70,8 +70,8 @@ jitcatch staged . --stub
 
 JitCatch writes two files to `.jitcatch/output/` and prints a summary to stdout.
 
-- `jitcatch-<timestamp>.json` — machine-readable candidates, weak catches first.
-- `jitcatch-<timestamp>.md` — human-readable ranking with test code, parent/child output, judge scores, and reviewer findings in a separate section.
+- `jitcatch-<timestamp>.json`. Machine-readable candidates, weak catches first.
+- `jitcatch-<timestamp>.md`. Human-readable ranking with test code, parent/child output, judge scores, and reviewer findings in a separate section.
 
 The **top section of the Markdown file** is what you care about before committing. Each weak catch tells you:
 
@@ -81,7 +81,7 @@ The **top section of the Markdown file** is what you care about before committin
 - Judge confidence (`tp_prob`, `bucket`, rationale).
 - A `final_score` combining rule flags and judge output.
 
-If that section is empty, JitCatch found no executable regression. That is not a guarantee of correctness — it is a strong signal for the diffs it could reason about and test.
+If that section is empty, JitCatch found no executable regression. That is not a guarantee of correctness. It is a strong signal for the diffs it could reason about and test.
 
 ---
 

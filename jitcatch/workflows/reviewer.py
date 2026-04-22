@@ -16,7 +16,7 @@ def run_agentic_reviewer(
     validator drops obvious FPs. Returns only findings with
     validator_verdict in {'keep', 'downgrade'} (drops are filtered).
 
-    The reviewer is intentionally a separate channel from test-gen — it
+    The reviewer is intentionally a separate channel from test-gen. It
     surfaces bugs that test-gen misses because the test can't exercise
     the regression (mocks swallow it, env vars stub out the fallback,
     function is never called in any test)."""

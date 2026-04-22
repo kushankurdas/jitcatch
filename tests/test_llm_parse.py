@@ -76,7 +76,7 @@ class ParseTestsTest(unittest.TestCase):
 
     def test_recovers_when_second_truncated_mid_body(self) -> None:
         tests = llm._parse_tests(TRUNCATED_MID_SECOND_TEST)
-        # First test completed — salvage returns at least that one.
+        # First test completed. Salvage returns at least that one.
         self.assertGreaterEqual(len(tests), 1)
         self.assertEqual(tests[0].name, "first")
 
@@ -142,7 +142,7 @@ class ParseJudgeTest(unittest.TestCase):
 
 class SmallModelClassifierTest(unittest.TestCase):
     """Guards the compact-prompt selection. Large/paid models MUST NOT
-    match — that guarantees the OpenAICompatClient._system_for_label
+    match. That guarantees the OpenAICompatClient._system_for_label
     override returns the default (full) prompt for them."""
 
     def test_paid_anthropic_models_not_small(self) -> None:
@@ -189,7 +189,7 @@ class TolerantRiskParsingTest(unittest.TestCase):
         self.assertEqual(out, ["[config.js] CORS origin flipped to *"])
 
     def test_canonical_still_wins(self) -> None:
-        # Canonical `risks` key takes precedence over aliases — paid
+        # Canonical `risks` key takes precedence over aliases. Paid
         # model output must hit the fast path.
         raw = '{"risks":[{"risk":"canonical"}],"changes":[{"change":"alias"}]}'
         out = llm._parse_json_array(raw)
@@ -274,7 +274,7 @@ class SystemPromptHookTest(unittest.TestCase):
         self.assertIs(picked, llm.RISKS_SYSTEM_BUNDLE_COMPACT)
 
     def test_compact_only_defined_for_bundle_paths(self) -> None:
-        # Non-bundle single-file path has no compact variant — falls
+        # Non-bundle single-file path has no compact variant. Falls
         # back to the full system prompt even on small models.
         c = self._mk_compat("gemma4:e4b")
         self.assertIs(

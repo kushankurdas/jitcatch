@@ -1,4 +1,4 @@
-# Use case 12 — Feedback-driven retry for uncaught risks
+# Use case 12. Feedback-driven retry for uncaught risks
 
 **Flags:** `--no-retry` (disable), `--max-retries <n>` (default 2), `--max-retry-risks <n>` (default 8).
 
@@ -24,7 +24,7 @@ Reach past this use case (with `--no-retry`) when:
 ## Command
 
 ```bash
-# Default — up to 2 retry rounds, 8 risks per round.
+# Default. Up to 2 retry rounds, 8 risks per round.
 jitcatch pr .
 
 # Disable the loop entirely.
@@ -33,10 +33,10 @@ jitcatch pr . --no-retry
 # Equivalent to --no-retry.
 jitcatch pr . --max-retries 0
 
-# Be generous — 4 rounds, 12 risks each. Expensive but thorough.
+# Be generous. 4 rounds, 12 risks each. Expensive but thorough.
 jitcatch pr . --max-retries 4 --max-retry-risks 12
 
-# Shave cost — one round, cap risks tightly.
+# Shave cost. One round, cap risks tightly.
 jitcatch pr . --max-retries 1 --max-retry-risks 4
 ```
 
@@ -63,9 +63,9 @@ The loop runs inside `_evaluate_and_report`, after the first-round evaluations f
 
 In the JSON and Markdown reports, retry candidates look like normal `CatchCandidate` entries but with a telltale `workflow`:
 
-- `intent_aware` — first-round risks-first test.
-- `dodgy_diff` — first-round mutation-mindset test.
-- `retry_r1`, `retry_r2`, ... — retry-round candidates.
+- `intent_aware`. First-round risks-first test.
+- `dodgy_diff`. First-round mutation-mindset test.
+- `retry_r1`, `retry_r2`, .... Retry-round candidates.
 
 The `risks` field on a retry candidate contains exactly the single uncaught risk the retry targeted. This makes it easy to follow the chain "risk → first test → failure → retry test → weak catch".
 
@@ -73,10 +73,10 @@ The `risks` field on a retry candidate contains exactly the single uncaught risk
 
 ## Tips
 
-- **The loop auto-terminates early.** If a round produces no new weak catches, JitCatch breaks out of the retry loop even if rounds are left. Setting `--max-retries 10` is safe — you will not pay for idle rounds.
+- **The loop auto-terminates early.** If a round produces no new weak catches, JitCatch breaks out of the retry loop even if rounds are left. Setting `--max-retries 10` is safe. You will not pay for idle rounds.
 - **`--max-retry-risks` is the real cost cap.** Prompts scale with the number of risks per round. Keep this at 8 or lower unless you know you want the spend.
 - **Combine with `--verbose`.** The retry prompt contains the failure output of the prior test, which is a goldmine for debugging test-gen. `.jitcatch/logs/` has the full transcript.
-- **Retry complements the reviewer, it does not replace it.** Some risks cannot produce a runnable test no matter how many retries you run — those are exactly what the agentic reviewer is for (see [11-agentic-reviewer.md](./11-agentic-reviewer.md)).
+- **Retry complements the reviewer, it does not replace it.** Some risks cannot produce a runnable test no matter how many retries you run. Those are exactly what the agentic reviewer is for (see [11-agentic-reviewer.md](./11-agentic-reviewer.md)).
 
 ---
 
